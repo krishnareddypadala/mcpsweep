@@ -42,25 +42,58 @@ mcpsweep 10.10.0.31 --ports 8090 --proxy http://127.0.0.1:8080
 # sweep a subnet and a port range, also list resources/prompts
 mcpsweep 10.10.0.0/28 --ports 8000-9100 --full
 
-# machine-readable output
-mcpsweep 10.10.0.31 --ports 8090 --format json -o report.json
-mcpsweep 10.10.0.31 --ports 8090 --format md   -o report.md
+# a full URL, and a target list from a file
+mcpsweep http://10.10.0.31:8090/mcp/api
+mcpsweep -iL targets.txt --exclude 10.10.0.5
+
+# authenticated scan (servers that require a token)
+mcpsweep 10.10.0.31 --ports 8090 --bearer "$TOKEN"
+mcpsweep 10.10.0.31 --ports 8090 -H "X-Api-Key: abc123"
+
+# reports: JSON, Markdown, SARIF (GitHub code-scanning), self-contained HTML
+mcpsweep 10.10.0.31 --ports 8090 --format json  -o report.json
+mcpsweep 10.10.0.31 --ports 8090 --format md    -o report.md
+mcpsweep 10.10.0.31 --ports 8090 --format sarif -o report.sarif
+mcpsweep 10.10.0.31 --ports 8090 --format html  -o report.html
+
+# CI gates: only show high+, fail the build on any critical
+mcpsweep 10.10.0.31 --ports 8090 --severity high --fail-on critical
+
+# drift detection between two JSON scans (continuous posture monitoring)
+mcpsweep diff yesterday.json today.json --fail-on-drift
 ```
 
 ### Key options
 
 | Flag | Purpose |
 |---|---|
+| `--target-file`/`-iL` | read targets from a file (one per line, `#` comments) |
+| `--exclude` | comma-separated hosts to skip |
 | `--ports` | ports/ranges, e.g. `8090,8000,9000-9010` |
 | `--paths` | URL paths to probe (defaults cover `/mcp`, `/mcp/api`, `/sse`, …) |
 | `--scheme` | `http`, `https`, or `both` |
+| `--header`/`-H`, `--bearer` | custom header(s) / bearer token for authenticated scans |
 | `--proxy` | send all traffic via a proxy (e.g. Burp on `127.0.0.1:8080`) |
 | `--insecure`/`-k` | skip TLS verification |
 | `--full` | also enumerate `resources/list` and `prompts/list` |
-| `--format`/`-f` | `text` (default), `json`, `md` |
+| `--severity` | only report endpoints at/above a level |
+| `--fail-on` | exit `2` if any endpoint is at/above a level (CI gate) |
+| `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
 | `--concurrency`/`-c` | parallel probes (default 16) |
 
-Exit code is `0` when at least one endpoint is found, `1` otherwise.
+Exit codes: `0` found (or clean), `1` nothing found, `2` `--fail-on` threshold hit,
+`3` drift found (`diff --fail-on-drift`).
+
+### Drift detection
+
+```bash
+mcpsweep 10.10.0.31 --ports 8090 -f json -o baseline.json   # week 1
+mcpsweep 10.10.0.31 --ports 8090 -f json -o current.json    # week 2
+mcpsweep diff baseline.json current.json
+```
+
+Reports **new / removed servers and tools**, **newly-poisoned** descriptions, and
+**risk-level changes** — turning point-in-time scans into continuous monitoring.
 
 > **Windows / Git Bash note:** Git Bash (MSYS) rewrites arguments that look like
 > Unix paths, so `--paths /mcp/api` becomes a Windows path before the tool sees
@@ -76,8 +109,13 @@ Exit code is `0` when at least one endpoint is found, `1` otherwise.
 - **Auth-gated endpoints**: `401/403` with an MCP/`WWW-Authenticate` signature.
 - **Risky tools**: name/description heuristics tag `rce`, `sql`, `money`,
   `destructive`, `write`, `secret`, `pii`, `filesystem`, …
-- **Tool poisoning**: descriptions containing hidden instructions to the model
-  ("ignore previous instructions", "silently", "password_hash", …).
+- **Prompt injection / poisoning** in tool descriptions **and** server
+  `instructions`, prompt templates, and resource listings ("ignore previous
+  instructions", "silently", "password_hash", …).
+- **Injection surface**: high-impact tools (`sql`/`rce`/…) that accept a
+  **free-form string** parameter.
+- **HTTP fingerprint**: `Server` / `X-Powered-By` headers, and server names that
+  hint at an elevated or untrusted purpose.
 
 A per-endpoint **risk score** rolls these up into `low / medium / high / critical`.
 

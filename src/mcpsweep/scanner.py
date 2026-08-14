@@ -16,6 +16,7 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -32,8 +33,8 @@ DEFAULT_PATHS = [
 
 # --- risk heuristics ---------------------------------------------------------
 
-#: substrings in a tool description that suggest an embedded instruction to the
-#: model (tool poisoning / prompt injection hidden in metadata)
+#: text (in a description / instructions / prompt / resource) that suggests an
+#: embedded instruction to the model (tool poisoning / prompt injection)
 POISON_RE = re.compile(
     r"(ignore\s+(all|previous|prior)|disregard\s+(all|previous)|"
     r"do not (mention|tell|inform|reveal this)|without (telling|informing|mentioning)|"
@@ -66,6 +67,13 @@ DANGEROUS_TAGS = {
     "secret", "pii", "filesystem",
 }
 
+#: tags where a free-form string parameter is a real injection surface
+INJECTABLE_TAGS = {"sql", "rce", "exec", "filesystem", "network"}
+
+#: server-name substrings that hint at an elevated / untrusted purpose
+RISKY_NAME_HINTS = ["shell", "exec", "admin", "root", "unsanctioned",
+                    "debug", "internal", "dev-", "devops"]
+
 
 @dataclass
 class ToolInfo:
@@ -73,6 +81,8 @@ class ToolInfo:
     description: str = ""
     tags: list = field(default_factory=list)
     poisoned: bool = False
+    freeform_params: list = field(default_factory=list)
+    injection_surface: bool = False
 
 
 @dataclass
@@ -88,8 +98,12 @@ class MCPEndpoint:
     protocol: str = "?"
     capabilities: list = field(default_factory=list)
     instructions: str = ""
+    instructions_poisoned: bool = False
+    server_header: str = ""
+    powered_by: str = ""
     session_id: Optional[str] = None
     auth_required: bool = False
+    authenticated: bool = False          # we sent auth and it worked
     tools: list = field(default_factory=list)          # list[ToolInfo]
     resources: list = field(default_factory=list)      # list[str]
     prompts: list = field(default_factory=list)        # list[str]
@@ -105,7 +119,7 @@ class MCPEndpoint:
 
 # --- low-level transport -----------------------------------------------------
 
-def _build_opener(proxy: Optional[str], insecure: bool):
+def _build_opener(proxy, insecure):
     handlers = []
     if proxy:
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
@@ -117,11 +131,9 @@ def _build_opener(proxy: Optional[str], insecure: bool):
     return urllib.request.build_opener(*handlers)
 
 
-def _parse_body(raw: str, content_type: str):
-    """Return a parsed JSON object from a plain-JSON or SSE-framed body."""
+def _parse_body(raw, content_type):
     ct = (content_type or "").lower()
     if "text/event-stream" in ct or raw.lstrip().startswith("event:") or "\ndata:" in raw:
-        # concatenate all `data:` payloads and try to parse the last JSON object
         chunks = [ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
         for chunk in reversed(chunks):
             try:
@@ -140,48 +152,44 @@ def _parse_body(raw: str, content_type: str):
     return None
 
 
-def _rpc(url, payload, proxy=None, timeout=8.0, session=None, insecure=False):
-    """POST a JSON-RPC message. Returns (body_obj_or_None, session_id, status)."""
+@dataclass
+class _Resp:
+    body: object
+    session: Optional[str]
+    status: int
+    headers: dict = field(default_factory=dict)
+
+
+def _rpc(url, payload, proxy=None, timeout=8.0, session=None, insecure=False, headers=None):
+    """POST a JSON-RPC message. Returns a _Resp (raises on connection error)."""
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json, text/event-stream")
     if session:
         req.add_header("MCP-Session-Id", session)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     opener = _build_opener(proxy, insecure)
     try:
         with opener.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
-            sid = resp.headers.get("MCP-Session-Id")
-            body = _parse_body(raw, resp.headers.get("Content-Type", ""))
-            return body, sid, getattr(resp, "status", 200)
+            h = {k.lower(): v for k, v in resp.headers.items()}
+            return _Resp(_parse_body(raw, resp.headers.get("Content-Type", "")),
+                         resp.headers.get("MCP-Session-Id"), getattr(resp, "status", 200), h)
     except urllib.error.HTTPError as e:
         raw = ""
         try:
             raw = e.read().decode("utf-8", "replace")
         except Exception:
             pass
-        body = _parse_body(raw, e.headers.get("Content-Type", "") if e.headers else "")
-        # surface auth challenges to the caller
-        www = e.headers.get("WWW-Authenticate", "") if e.headers else ""
-        return {"__httperror__": e.code, "__www__": www, "body": body}, None, e.code
-
-
-# --- handshake + enumeration -------------------------------------------------
-
-def _init_payload():
-    return {
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": "mcpsweep", "version": "0.1.0"},
-        },
-    }
+        eh = {k.lower(): v for k, v in (e.headers or {}).items()}
+        body = _parse_body(raw, eh.get("content-type", ""))
+        return _Resp({"__httperror__": e.code, "__www__": eh.get("www-authenticate", ""),
+                      "body": body}, None, e.code, eh)
 
 
 def _is_transient(ex):
-    """True for connection resets / timeouts worth retrying (not a closed port)."""
     reason = getattr(ex, "reason", ex)
     if isinstance(reason, (ConnectionResetError, TimeoutError, socket.timeout)):
         return True
@@ -192,35 +200,68 @@ def _is_transient(ex):
     return False
 
 
-def probe(host, port, path, scheme="http", proxy=None, timeout=8.0, insecure=False, retries=2):
-    """Try one host:port+path. Returns an MCPEndpoint or None.
-
-    Retries the handshake on transient connection errors (resets/timeouts) so a
-    momentary blip under concurrent load doesn't drop a live endpoint.
-    """
-    url = f"{scheme}://{host}:{port}{path}"
-    body = sid = None
+def _rpc_retry(url, payload, proxy, timeout, session, insecure, headers, retries=2):
     for attempt in range(retries + 1):
         try:
-            body, sid, status = _rpc(url, _init_payload(), proxy, timeout, insecure=insecure)
-            break
+            return _rpc(url, payload, proxy, timeout, session, insecure, headers)
         except Exception as ex:
             if attempt < retries and _is_transient(ex):
                 time.sleep(0.15 * (attempt + 1))
                 continue
-            return None
+            raise
+
+
+# --- handshake + enumeration -------------------------------------------------
+
+def _init_payload():
+    return {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+            "clientInfo": {"name": "mcpsweep", "version": "0.2.0"},
+        },
+    }
+
+
+def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
+          insecure=False, headers=None, retries=2):
+    """Try one host:port+path. Returns an MCPEndpoint or None."""
+    url = f"{scheme}://{host}:{port}{path}"
+    try:
+        r = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
+    except Exception:
+        return None
+    return _endpoint_from_resp(url, host, port, path, scheme, r, bool(headers))
+
+
+def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None, retries=2):
+    """Probe an exact URL (scheme://host:port/path)."""
+    u = urllib.parse.urlparse(full_url)
+    scheme = u.scheme or "http"
+    host = u.hostname or ""
+    port = u.port or (443 if scheme == "https" else 80)
+    path = u.path or "/"
+    try:
+        r = _rpc_retry(full_url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
+    except Exception:
+        return None
+    return _endpoint_from_resp(full_url, host, port, path, scheme, r, bool(headers))
+
+
+def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
+    body = r.body
     if body is None:
         return None
 
-    # auth-gated MCP endpoint?
     if isinstance(body, dict) and body.get("__httperror__") in (401, 403):
         inner = body.get("body")
         looks_mcp = bool(body.get("__www__")) or (
-            isinstance(inner, dict) and ("jsonrpc" in inner or "error" in inner)
-        )
+            isinstance(inner, dict) and ("jsonrpc" in inner or "error" in inner))
         if looks_mcp:
             ep = MCPEndpoint(url=url, host=host, port=port, path=path, scheme=scheme,
                              auth_required=True, server_name="(auth required)")
+            ep.server_header = r.headers.get("server", "")
+            ep.powered_by = r.headers.get("x-powered-by", "")
             ep.findings.append("endpoint requires authentication (good)")
             return ep
         return None
@@ -233,88 +274,111 @@ def probe(host, port, path, scheme="http", proxy=None, timeout=8.0, insecure=Fal
 
     si = result.get("serverInfo", {}) or {}
     caps = list((result.get("capabilities") or {}).keys())
+    instr = (result.get("instructions") or "").replace("\n", " ").strip()
     ep = MCPEndpoint(
         url=url, host=host, port=port, path=path, scheme=scheme,
         transport="sse" if "sse" in path else "streamable-http",
         server_name=si.get("name", "?"), server_version=si.get("version", "?"),
         protocol=result.get("protocolVersion", "?"), capabilities=caps,
-        instructions=(result.get("instructions") or "").replace("\n", " ").strip(),
-        session_id=sid,
+        instructions=instr, instructions_poisoned=bool(POISON_RE.search(instr)),
+        server_header=r.headers.get("server", ""), powered_by=r.headers.get("x-powered-by", ""),
+        session_id=r.session, authenticated=sent_auth,
     )
-    # unauthenticated init succeeded -> no auth in front of this server
-    ep.findings.append("initialize succeeded without credentials (no authentication)")
+    if sent_auth:
+        ep.findings.append("initialize succeeded with the supplied credentials")
+    else:
+        ep.findings.append("initialize succeeded without credentials (no authentication)")
     return ep
 
 
-def _notify_initialized(url, sid, proxy, timeout, insecure):
+def _notify_initialized(url, sid, proxy, timeout, insecure, headers):
     try:
         _rpc(url, {"jsonrpc": "2.0", "method": "notifications/initialized"},
-             proxy, timeout, session=sid, insecure=insecure)
+             proxy, timeout, session=sid, insecure=insecure, headers=headers)
     except Exception:
         pass
 
 
-def _list(url, method, key, sid, proxy, timeout, insecure, retries=2):
-    body = None
-    for attempt in range(retries + 1):
-        try:
-            body, _, _ = _rpc(url, {"jsonrpc": "2.0", "id": 2, "method": method, "params": {}},
-                              proxy, timeout, session=sid, insecure=insecure)
-            break
-        except Exception as ex:
-            if attempt < retries and _is_transient(ex):
-                time.sleep(0.15 * (attempt + 1))
-                continue
-            return []
-    if isinstance(body, dict):
-        return (body.get("result") or {}).get(key, []) or []
+def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2):
+    try:
+        r = _rpc_retry(url, {"jsonrpc": "2.0", "id": 2, "method": method, "params": {}},
+                       proxy, timeout, sid, insecure, headers, retries)
+    except Exception:
+        return []
+    if isinstance(r.body, dict):
+        return (r.body.get("result") or {}).get(key, []) or []
     return []
 
 
-def enumerate_endpoint(ep: MCPEndpoint, proxy=None, timeout=8.0, insecure=False, full=False):
-    """Populate tools (and, with full=True, resources/prompts) + risk scoring."""
-    if ep.auth_required:
-        ep.risk_level = "info"
-        return ep
-    _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure)
+def _analyze_tool(t):
+    name = t.get("name", "")
+    desc = t.get("description", "") or ""
+    blob = (name + " " + desc).lower()
+    tags = sorted({tag for kw, tag in RISK_KEYWORDS.items() if kw in blob})
+    props = (t.get("inputSchema") or {}).get("properties") or {}
+    freeform = sorted(p for p, spec in props.items()
+                      if isinstance(spec, dict) and spec.get("type") == "string"
+                      and not spec.get("enum"))
+    injection = bool(freeform) and bool(set(tags) & INJECTABLE_TAGS)
+    return ToolInfo(name=name, description=desc, tags=tags,
+                    poisoned=bool(POISON_RE.search(desc)),
+                    freeform_params=freeform, injection_surface=injection)
 
-    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure)
-    for t in raw_tools:
-        name = t.get("name", "")
-        desc = t.get("description", "") or ""
-        blob = (name + " " + desc).lower()
-        tags = sorted({tag for kw, tag in RISK_KEYWORDS.items() if kw in blob})
-        poisoned = bool(POISON_RE.search(desc))
-        ep.tools.append(ToolInfo(name=name, description=desc, tags=tags, poisoned=poisoned))
+
+def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False, headers=None):
+    if ep.auth_required:
+        return ep
+    _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
+
+    for raw in _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure, headers):
+        ep.tools.append(_analyze_tool(raw))
 
     if full:
-        ep.resources = [r.get("uri", r.get("name", "?"))
-                        for r in _list(ep.url, "resources/list", "resources",
-                                       ep.session_id, proxy, timeout, insecure)]
-        ep.prompts = [p.get("name", "?")
-                      for p in _list(ep.url, "prompts/list", "prompts",
-                                     ep.session_id, proxy, timeout, insecure)]
+        res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout, insecure, headers)
+        ep.resources = [r.get("uri", r.get("name", "?")) for r in res]
+        for r in res:
+            if POISON_RE.search(json.dumps(r)):
+                ep.findings.append(f"resource looks POISONED: {r.get('uri', r.get('name','?'))}")
+        pr = _list(ep.url, "prompts/list", "prompts", ep.session_id, proxy, timeout, insecure, headers)
+        ep.prompts = [p.get("name", "?") for p in pr]
+        for p in pr:
+            if POISON_RE.search(json.dumps(p)):
+                ep.findings.append(f"prompt looks POISONED: {p.get('name','?')}")
 
     _score(ep)
     return ep
 
 
-def _score(ep: MCPEndpoint):
+def _score(ep):
     score = 0
-    if not ep.auth_required:
-        score += 20  # unauthenticated surface
+    if not ep.auth_required and not ep.authenticated:
+        score += 20
+    if ep.instructions_poisoned:
+        score += 20
+        ep.findings.append("server instructions contain injected content")
     poisoned = [t for t in ep.tools if t.poisoned]
+    injectable = [t for t in ep.tools if t.injection_surface]
     for t in ep.tools:
         score += 6 * len(set(t.tags) & DANGEROUS_TAGS)
         if t.poisoned:
             score += 25
+        if t.injection_surface:
+            score += 10
+    for f in ep.findings:
+        if "POISONED" in f or "injected" in f:
+            score += 8
     if poisoned:
         ep.findings.append(f"{len(poisoned)} tool description(s) look POISONED: "
                            + ", ".join(t.name for t in poisoned))
+    if injectable:
+        ep.findings.append("free-form input on high-impact tools (injection surface): "
+                           + ", ".join(t.name for t in injectable))
     dangerous = [t for t in ep.tools if set(t.tags) & {"rce", "sql", "money", "destructive"}]
     if dangerous:
-        ep.findings.append("high-impact tools exposed: "
-                           + ", ".join(t.name for t in dangerous))
+        ep.findings.append("high-impact tools exposed: " + ", ".join(t.name for t in dangerous))
+    hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
+    if hint:
+        ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")
     ep.risk_score = score
     ep.risk_level = ("critical" if score >= 60 else "high" if score >= 35
                      else "medium" if score >= 15 else "low")
@@ -322,8 +386,10 @@ def _score(ep: MCPEndpoint):
 
 # --- target expansion + orchestration ---------------------------------------
 
+_URL_RE = re.compile(r"^https?://", re.I)
+
+
 def expand_targets(targets):
-    """Expand hostnames and CIDR blocks into a flat list of host strings."""
     out = []
     for t in targets:
         t = t.strip()
@@ -337,7 +403,6 @@ def expand_targets(targets):
         except ValueError:
             pass
         out.append(t)
-    # de-dup, preserve order
     seen, uniq = set(), []
     for h in out:
         if h not in seen:
@@ -346,7 +411,6 @@ def expand_targets(targets):
 
 
 def parse_ports(spec):
-    """'8000,8090,9000-9010' -> sorted unique int list."""
     ports = set()
     for part in str(spec).split(","):
         part = part.strip()
@@ -360,26 +424,44 @@ def parse_ports(spec):
     return sorted(p for p in ports if 0 < p < 65536)
 
 
-def scan(targets, ports, paths=None, schemes=("http",), proxy=None,
-         timeout=8.0, concurrency=16, insecure=False, full=False, on_found=None):
-    """Sweep every host x port x path x scheme. Returns list[MCPEndpoint].
+def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
+         concurrency=16, insecure=False, full=False, headers=None, exclude=None,
+         retries=2, on_found=None):
+    """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
-    ``on_found(ep)`` is called as each endpoint is confirmed (for live output).
+    Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
+    ``exclude`` is a set of hosts to skip. ``on_found(ep)`` fires per discovery.
     """
     paths = paths or DEFAULT_PATHS
-    hosts = expand_targets(targets)
-    jobs = [(h, p, path, sc)
-            for h in hosts for p in ports for path in paths for sc in schemes]
+    exclude = set(exclude or ())
+
+    url_targets = [t for t in targets if _URL_RE.match(t.strip())]
+    host_targets = [t for t in targets if not _URL_RE.match(t.strip())]
+    hosts = [h for h in expand_targets(host_targets) if h not in exclude]
+
+    jobs = []  # each: ("url", full_url) or ("hpp", host, port, path, scheme)
+    for u in url_targets:
+        jobs.append(("url", u))
+    for h in hosts:
+        for p in ports:
+            for path in paths:
+                for sc in schemes:
+                    jobs.append(("hpp", h, p, path, sc))
+
+    def run(job):
+        if job[0] == "url":
+            return probe_url(job[1], proxy, timeout, insecure, headers, retries)
+        _, h, p, path, sc = job
+        return probe(h, p, path, sc, proxy, timeout, insecure, headers, retries)
 
     found = []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futs = {pool.submit(probe, h, p, path, sc, proxy, timeout, insecure): (h, p, path, sc)
-                for (h, p, path, sc) in jobs}
+        futs = [pool.submit(run, j) for j in jobs]
         for fut in as_completed(futs):
             ep = fut.result()
             if ep is None:
                 continue
-            enumerate_endpoint(ep, proxy, timeout, insecure, full)
+            enumerate_endpoint(ep, proxy, timeout, insecure, full, headers)
             found.append(ep)
             if on_found:
                 on_found(ep)
