@@ -5,7 +5,8 @@ build/
 dist/
 .venv/
 venv/
-*.json
+# scan outputs (kept out of the repo), but NOT project config json
+/report.json
+/report.sarif
 *.md.out
-!README.md
 .DS_Store
