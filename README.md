@@ -51,6 +51,7 @@ mcpsweep http://10.10.0.31:8090/mcp/api
 mcpsweep -iL targets.txt --exclude 10.10.0.5
 mcpsweep -iL targets.json           # ["10.0.0.1", "http://h:8090/mcp"] or {"targets":[...]}
 mcpsweep -iL previous-report.json   # re-scan the endpoints from an earlier JSON report
+mcpsweep -iL claude_desktop_config.json   # your MCP client config (mcpServers) — scans the http/sse servers
 
 # authenticated scan (servers that require a token)
 mcpsweep 10.10.0.31 --ports 8090 --bearer "$TOKEN"
@@ -73,7 +74,7 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 
 | Flag | Purpose |
 |---|---|
-| `--target-file`/`-iL` | targets from a file: one-per-line text (`#` comments) **or** JSON (array, `{"targets":[…]}`, or a prior mcpsweep report) |
+| `--target-file`/`-iL` | targets from a file: one-per-line text (`#` comments) **or** JSON (array, `{"targets":[…]}`, a prior mcpsweep report, or an MCP client `mcpServers` config — stdio servers are skipped) |
 | `--exclude` | comma-separated hosts to skip |
 | `--ports` | ports/ranges, e.g. `8090,8000,9000-9010` |
 | `--paths` | URL paths to probe (defaults cover `/mcp`, `/mcp/api`, `/sse`, …) |

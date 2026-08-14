@@ -174,9 +174,13 @@ def build_parser():
 def _extract_targets(obj):
     """Pull target strings from a parsed JSON structure.
 
-    Accepts a list, a {"targets": [...]} object, or a prior mcpsweep report
-    ({"endpoints": [{"url": ...}]}) to re-scan. List items may be plain strings
-    or objects with a "url" / "host" / "target" key.
+    Accepts, in order of preference:
+      * a list of strings / objects with a "url" / "host" / "target" key
+      * a {"targets": [...]} object
+      * a prior mcpsweep report ({"endpoints": [{"url": ...}]}) to re-scan
+      * an MCP client config ({"mcpServers": {name: {"url": ...}}}) — the format
+        used by Claude Desktop / Cursor / Claude Code; stdio servers (no "url")
+        are skipped since they are not HTTP-scannable.
     """
     def from_item(it):
         if isinstance(it, str):
@@ -191,6 +195,8 @@ def _extract_targets(obj):
         items = obj["targets"]
     elif isinstance(obj, dict) and isinstance(obj.get("endpoints"), list):
         items = obj["endpoints"]
+    elif isinstance(obj, dict) and isinstance(obj.get("mcpServers"), dict):
+        items = list(obj["mcpServers"].values())
     else:
         items = []
     return [t for t in (from_item(i) for i in items) if t]
@@ -204,7 +210,15 @@ def _read_target_file(path):
             obj = json.loads(raw)
         except json.JSONDecodeError as e:
             raise SystemExit(f"error: {path} looks like JSON but failed to parse: {e}")
-        return _extract_targets(obj)
+        targets = _extract_targets(obj)
+        # note stdio servers in an mcpServers config — they can't be HTTP-scanned
+        if isinstance(obj, dict) and isinstance(obj.get("mcpServers"), dict):
+            stdio = [n for n, c in obj["mcpServers"].items()
+                     if isinstance(c, dict) and not c.get("url")]
+            if stdio:
+                print(f"note: skipped {len(stdio)} stdio MCP server(s) in {path} "
+                      f"(not HTTP-scannable): {', '.join(stdio)}", file=sys.stderr)
+        return targets
     # plain text: one target per line, '#' comments
     out = []
     for line in raw.splitlines():
@@ -224,7 +238,11 @@ def main(argv=None):
     if args.target_file:
         targets += _read_target_file(args.target_file)
     if not targets:
-        print("error: provide at least one target or --target-file", file=sys.stderr)
+        if args.target_file:
+            print(f"error: no scannable http/sse targets found in {args.target_file}",
+                  file=sys.stderr)
+        else:
+            print("error: provide at least one target or --target-file", file=sys.stderr)
         return 2
 
     if args.no_color or args.format != "text" or not sys.stdout.isatty():

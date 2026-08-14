@@ -207,6 +207,16 @@ def test_target_file_json_report(tmp_path):
     assert _read_target_file(str(p)) == ["http://h:1/mcp", "http://h:2/mcp"]
 
 
+def test_target_file_mcp_client_config(tmp_path):
+    # the Claude Desktop / Cursor / Claude Code mcpServers format
+    p = tmp_path / "config.json"
+    p.write_text('{"mcpServers": {'
+                 '"docs": {"type": "http", "url": "https://h/docs/mcp"}, '
+                 '"pw": {"type": "stdio", "command": "npx", "args": ["-y", "x"]}}}')
+    # only the http server is scannable; the stdio one is skipped
+    assert _read_target_file(str(p)) == ["https://h/docs/mcp"]
+
+
 def test_diff(tmp_path):
     a = {"endpoints": [{"url": "u1", "risk_level": "high",
                         "tools": [{"name": "x", "poisoned": False}]}]}
