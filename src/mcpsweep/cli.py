@@ -166,6 +166,9 @@ def build_parser():
     p.add_argument("--format", "-f", choices=["text", "json", "md", "sarif", "html"], default="text")
     p.add_argument("--output", "-o", help="write report to a file instead of stdout")
     p.add_argument("--no-color", action="store_true")
+    p.add_argument("--verbose", "-v", action="count", default=0,
+                   help="explain probe misses: -v shows HTTP responses that weren't MCP, "
+                        "-vv also shows connection errors")
     p.add_argument("--quiet", "-q", action="store_true", help="suppress live progress")
     p.add_argument("--version", "-V", action="version", version=f"mcpsweep {__version__}")
     return p
@@ -266,11 +269,16 @@ def main(argv=None):
             print(f"  {C.OK}found{C.Z} {ep.url}  {tag}{ep.risk_level}{C.Z}  "
                   f"({len(ep.tools)} tools)", file=sys.stderr)
 
+    def diag(url, status, reason):
+        if args.verbose and args.format == "text":
+            if status is not None or args.verbose >= 2:
+                print(f"  {C.DIM}miss{C.Z} {url}: {reason}", file=sys.stderr)
+
     t0 = time.time()
     try:
         endpoints = scan(targets, ports, paths, schemes, proxy=args.proxy, timeout=args.timeout,
                          concurrency=args.concurrency, insecure=args.insecure, full=args.full,
-                         headers=headers, exclude=exclude, on_found=live)
+                         headers=headers, exclude=exclude, on_found=live, on_diag=diag)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130

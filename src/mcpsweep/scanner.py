@@ -224,17 +224,28 @@ def _init_payload():
 
 
 def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
-          insecure=False, headers=None, retries=2):
-    """Try one host:port+path. Returns an MCPEndpoint or None."""
+          insecure=False, headers=None, retries=2, on_diag=None):
+    """Try one host:port+path. Returns an MCPEndpoint or None.
+
+    ``on_diag(url, status, reason)`` (optional) is called when the probe does
+    NOT yield a confirmed endpoint, so verbose callers can explain a miss.
+    ``status`` is None for connection-level failures.
+    """
     url = f"{scheme}://{host}:{port}{path}"
     try:
         r = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
-    except Exception:
+    except Exception as ex:
+        if on_diag:
+            on_diag(url, None, f"connection error: {type(ex).__name__}")
         return None
-    return _endpoint_from_resp(url, host, port, path, scheme, r, bool(headers))
+    ep = _endpoint_from_resp(url, host, port, path, scheme, r, bool(headers))
+    if ep is None and on_diag:
+        on_diag(url, r.status, _why_not_mcp(r))
+    return ep
 
 
-def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None, retries=2):
+def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None,
+              retries=2, on_diag=None):
     """Probe an exact URL (scheme://host:port/path)."""
     u = urllib.parse.urlparse(full_url)
     scheme = u.scheme or "http"
@@ -243,9 +254,14 @@ def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None, r
     path = u.path or "/"
     try:
         r = _rpc_retry(full_url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
-    except Exception:
+    except Exception as ex:
+        if on_diag:
+            on_diag(full_url, None, f"connection error: {type(ex).__name__}")
         return None
-    return _endpoint_from_resp(full_url, host, port, path, scheme, r, bool(headers))
+    ep = _endpoint_from_resp(full_url, host, port, path, scheme, r, bool(headers))
+    if ep is None and on_diag:
+        on_diag(full_url, r.status, _why_not_mcp(r))
+    return ep
 
 
 def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
@@ -289,6 +305,20 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
     else:
         ep.findings.append("initialize succeeded without credentials (no authentication)")
     return ep
+
+
+def _why_not_mcp(r):
+    """Human-readable reason a probe response was not a valid MCP endpoint."""
+    b = r.body
+    if isinstance(b, dict) and b.get("__httperror__"):
+        code = b["__httperror__"]
+        return f"HTTP {code} (not recognised as MCP - likely auth-gated or wrong path)"
+    ct = r.headers.get("content-type", "?")
+    if b is None:
+        return f"HTTP {r.status}: unparseable/non-JSON body (content-type {ct})"
+    if isinstance(b, dict) and isinstance(b.get("result"), dict):
+        return f"HTTP {r.status}: JSON-RPC result but no protocolVersion"
+    return f"HTTP {r.status}: responded but not an MCP initialize (content-type {ct})"
 
 
 def _notify_initialized(url, sid, proxy, timeout, insecure, headers):
@@ -426,7 +456,7 @@ def parse_ports(spec):
 
 def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
          concurrency=16, insecure=False, full=False, headers=None, exclude=None,
-         retries=2, on_found=None):
+         retries=2, on_found=None, on_diag=None):
     """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
     Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
@@ -450,9 +480,9 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
 
     def run(job):
         if job[0] == "url":
-            return probe_url(job[1], proxy, timeout, insecure, headers, retries)
+            return probe_url(job[1], proxy, timeout, insecure, headers, retries, on_diag)
         _, h, p, path, sc = job
-        return probe(h, p, path, sc, proxy, timeout, insecure, headers, retries)
+        return probe(h, p, path, sc, proxy, timeout, insecure, headers, retries, on_diag)
 
     found = []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:

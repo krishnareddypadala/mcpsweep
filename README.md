@@ -86,6 +86,7 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--severity` | only report endpoints at/above a level |
 | `--fail-on` | exit `2` if any endpoint is at/above a level (CI gate) |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
+| `--verbose`/`-v` | explain probe misses: `-v` shows HTTP responses that weren't MCP (401, 404, redirect…), `-vv` also shows connection errors |
 | `--concurrency`/`-c` | parallel probes (default 16) |
 
 Exit codes: `0` found (or clean), `1` nothing found, `2` `--fail-on` threshold hit,
