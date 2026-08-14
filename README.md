@@ -1,5 +1,9 @@
 # mcpsweep
 
+[![CI](https://github.com/krishnareddypadala/mcpsweep/actions/workflows/ci.yml/badge.svg)](https://github.com/krishnareddypadala/mcpsweep/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mcpsweep.svg)](https://pypi.org/project/mcpsweep/)
+[![Python](https://img.shields.io/pypi/pyversions/mcpsweep.svg)](https://pypi.org/project/mcpsweep/)
+
 A small, dependency-free **discovery and fingerprinting scanner for MCP-over-HTTP
 servers**. It finds Model Context Protocol endpoints on a host or network,
 performs the JSON-RPC `initialize` handshake to fingerprint each one, enumerates

@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []  # stdlib only
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
 [project.urls]
 Homepage = "https://github.com/krishnareddypadala/mcpsweep"
 Issues = "https://github.com/krishnareddypadala/mcpsweep/issues"
