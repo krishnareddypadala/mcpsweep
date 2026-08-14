@@ -30,6 +30,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
       - name: Compile
-        run: python -m py_compile src/mcpsweep/*.py
+        run: python -m compileall -q src/mcpsweep
       - name: Test
         run: python -m pytest -q
