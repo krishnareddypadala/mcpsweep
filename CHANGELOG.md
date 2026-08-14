@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/krishnareddypadala/mcpsweep/compare/v0.2.0...v0.3.0) (2026-08-14)
+
+
+### Features
+
+* accept JSON target files (array, {targets:[...]}, or a prior report) ([4fdfe05](https://github.com/krishnareddypadala/mcpsweep/commit/4fdfe054026d2df86a491604238355f6f2655e1b))
+* add -v/--verbose to explain why probes miss ([855b469](https://github.com/krishnareddypadala/mcpsweep/commit/855b4693f46d537e3266d754b12cf477e1bd4d34))
+* read targets from an MCP client config (mcpServers) ([d880b82](https://github.com/krishnareddypadala/mcpsweep/commit/d880b82e94c6dd1726ae5464f85eeec9816b3e02))
+
+
+### Bug Fixes
+
+* commit release-please config that .gitignore was hiding ([8a48248](https://github.com/krishnareddypadala/mcpsweep/commit/8a48248ce3495107356cfdb0c1232954720d94a1))
+
 ## 0.2.0
 
 **Targets & auth**
