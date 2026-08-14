@@ -14,6 +14,7 @@ import pytest
 from mcpsweep import scan
 from mcpsweep import diff as _diff
 from mcpsweep import report as _report
+from mcpsweep.cli import _read_target_file
 from mcpsweep.scanner import (
     POISON_RE, _analyze_tool, expand_targets, parse_ports,
 )
@@ -180,6 +181,30 @@ def test_html_render():
     out = _report.render_html(eps, "test", 0.1)
     assert out.strip().startswith("<!doctype")
     assert "test-server" in out
+
+
+def test_target_file_text(tmp_path):
+    p = tmp_path / "t.txt"
+    p.write_text("10.0.0.1\n# comment\nhttp://x:8090/mcp\n\n")
+    assert _read_target_file(str(p)) == ["10.0.0.1", "http://x:8090/mcp"]
+
+
+def test_target_file_json_array(tmp_path):
+    p = tmp_path / "t.json"
+    p.write_text('["10.0.0.1", "http://h:8090/mcp", {"host": "10.0.0.2"}]')
+    assert _read_target_file(str(p)) == ["10.0.0.1", "http://h:8090/mcp", "10.0.0.2"]
+
+
+def test_target_file_json_targets_key(tmp_path):
+    p = tmp_path / "t.json"
+    p.write_text('{"targets": ["a", {"url": "http://b/mcp"}]}')
+    assert _read_target_file(str(p)) == ["a", "http://b/mcp"]
+
+
+def test_target_file_json_report(tmp_path):
+    p = tmp_path / "r.json"
+    p.write_text('{"endpoints": [{"url": "http://h:1/mcp"}, {"url": "http://h:2/mcp"}]}')
+    assert _read_target_file(str(p)) == ["http://h:1/mcp", "http://h:2/mcp"]
 
 
 def test_diff(tmp_path):

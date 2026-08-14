@@ -145,7 +145,9 @@ def build_parser():
     p.add_argument("targets", nargs="*",
                    help="host(s), CIDR block(s), or full URL(s); e.g. 10.10.0.31, 10.10.0.0/28, "
                         "http://h:8090/mcp/api")
-    p.add_argument("--target-file", "-iL", help="file with one target per line (# comments allowed)")
+    p.add_argument("--target-file", "-iL",
+                   help="targets file: one-per-line text (# comments) OR JSON "
+                        "(array, {\"targets\":[...]}, or a prior mcpsweep report)")
     p.add_argument("--exclude", help="comma-separated hosts to skip")
     p.add_argument("--ports", default=",".join(map(str, DEFAULT_PORTS)),
                    help="ports/ranges, e.g. '8090,8000,9000-9010'")
@@ -169,13 +171,46 @@ def build_parser():
     return p
 
 
+def _extract_targets(obj):
+    """Pull target strings from a parsed JSON structure.
+
+    Accepts a list, a {"targets": [...]} object, or a prior mcpsweep report
+    ({"endpoints": [{"url": ...}]}) to re-scan. List items may be plain strings
+    or objects with a "url" / "host" / "target" key.
+    """
+    def from_item(it):
+        if isinstance(it, str):
+            return it.strip()
+        if isinstance(it, dict):
+            return str(it.get("url") or it.get("host") or it.get("target") or "").strip()
+        return ""
+
+    if isinstance(obj, list):
+        items = obj
+    elif isinstance(obj, dict) and isinstance(obj.get("targets"), list):
+        items = obj["targets"]
+    elif isinstance(obj, dict) and isinstance(obj.get("endpoints"), list):
+        items = obj["endpoints"]
+    else:
+        items = []
+    return [t for t in (from_item(i) for i in items) if t]
+
+
 def _read_target_file(path):
-    out = []
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.split("#", 1)[0].strip()
-            if line:
-                out.append(line)
+        raw = fh.read()
+    if raw.lstrip()[:1] in "[{":                       # JSON array or object
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"error: {path} looks like JSON but failed to parse: {e}")
+        return _extract_targets(obj)
+    # plain text: one target per line, '#' comments
+    out = []
+    for line in raw.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(line)
     return out
 
 

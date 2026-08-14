@@ -46,9 +46,11 @@ mcpsweep 10.10.0.31 --ports 8090 --proxy http://127.0.0.1:8080
 # sweep a subnet and a port range, also list resources/prompts
 mcpsweep 10.10.0.0/28 --ports 8000-9100 --full
 
-# a full URL, and a target list from a file
+# a full URL, and a target list from a file (text or JSON)
 mcpsweep http://10.10.0.31:8090/mcp/api
 mcpsweep -iL targets.txt --exclude 10.10.0.5
+mcpsweep -iL targets.json           # ["10.0.0.1", "http://h:8090/mcp"] or {"targets":[...]}
+mcpsweep -iL previous-report.json   # re-scan the endpoints from an earlier JSON report
 
 # authenticated scan (servers that require a token)
 mcpsweep 10.10.0.31 --ports 8090 --bearer "$TOKEN"
@@ -71,7 +73,7 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 
 | Flag | Purpose |
 |---|---|
-| `--target-file`/`-iL` | read targets from a file (one per line, `#` comments) |
+| `--target-file`/`-iL` | targets from a file: one-per-line text (`#` comments) **or** JSON (array, `{"targets":[…]}`, or a prior mcpsweep report) |
 | `--exclude` | comma-separated hosts to skip |
 | `--ports` | ports/ranges, e.g. `8090,8000,9000-9010` |
 | `--paths` | URL paths to probe (defaults cover `/mcp`, `/mcp/api`, `/sse`, …) |
