@@ -90,6 +90,7 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--proxy` | send all traffic via a proxy (e.g. Burp on `127.0.0.1:8080`) |
 | `--insecure`/`-k` | skip TLS verification |
 | `--full` | also enumerate `resources/list` and `prompts/list` |
+| `--auth-probe` | for auth-gated servers, follow OAuth metadata (RFC 9728/8414) and classify (implied by `--full`) |
 | `--severity` | only report endpoints at/above a level |
 | `--fail-on` | exit `2` if any endpoint is at/above a level (CI gate) |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
@@ -121,7 +122,9 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
   handshake (Streamable-HTTP and SSE-framed responses).
 - **Server fingerprint**: name, version, protocol, capabilities, instructions.
 - **No authentication**: `initialize` that succeeds with no credentials.
-- **Auth-gated endpoints**: `401/403` with an MCP/`WWW-Authenticate` signature.
+- **Auth-gated endpoints**: `401/403` with an MCP/`WWW-Authenticate` signature; with
+  `--auth-probe`, follows the OAuth metadata chain and classifies as *OAuth 2.1
+  protected* / *non-standard* / *misconfigured* (missing PKCE, open DCR).
 - **Risky tools**: name/description heuristics tag `rce`, `sql`, `money`,
   `destructive`, `write`, `secret`, `pii`, `filesystem`, …
 - **Prompt injection / poisoning** in tool descriptions **and** server

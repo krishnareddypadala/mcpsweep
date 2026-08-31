@@ -100,6 +100,59 @@ def running_server(require_auth=False):
         srv.shutdown()
 
 
+def make_auth_handler(standard=True):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _json(self, obj, code=200, extra=None):
+            b = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(b)
+
+        def _base(self):
+            return "http://127.0.0.1:%d" % self.server.server_address[1]
+
+        def do_POST(self):
+            if self.path.rstrip("/") != "/mcp":
+                self._json({"error": "nf"}, 404)
+                return
+            www = "Bearer"
+            if standard:
+                www = 'Bearer resource_metadata="%s/.well-known/oauth-protected-resource"' % self._base()
+            self._json({"jsonrpc": "2.0", "error": {"code": -32001, "message": "unauthorized"}},
+                       401, {"WWW-Authenticate": www})
+
+        def do_GET(self):
+            b = self._base()
+            if standard and self.path == "/.well-known/oauth-protected-resource":
+                self._json({"resource": b, "authorization_servers": [b],
+                            "scopes_supported": ["mcp:read", "mcp:write"]})
+            elif standard and self.path == "/.well-known/oauth-authorization-server":
+                self._json({"authorization_endpoint": b + "/authorize", "token_endpoint": b + "/token",
+                            "code_challenge_methods_supported": ["S256"],
+                            "registration_endpoint": b + "/register"})
+            else:
+                self._json({"error": "nf"}, 404)
+    return H
+
+
+@contextlib.contextmanager
+def running_auth_server(standard=True):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_auth_handler(standard))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        srv.shutdown()
+
+
 # --- unit tests --------------------------------------------------------------
 
 def test_parse_ports():
@@ -257,6 +310,25 @@ def test_target_file_mcp_client_config(tmp_path):
                  '"pw": {"type": "stdio", "command": "npx", "args": ["-y", "x"]}}}')
     # only the http server is scannable; the stdio one is skipped
     assert _read_target_file(str(p)) == ["https://h/docs/mcp"]
+
+
+def test_auth_probe_oauth():
+    with running_auth_server(standard=True) as port:
+        eps = scan(["127.0.0.1"], [port], paths=["/mcp"], auth_probe=True)
+    assert len(eps) == 1
+    ep = eps[0]
+    assert ep.auth_required
+    assert ep.auth["status"] == "oauth2.1"
+    assert "mcp:read" in ep.auth["scopes"]
+    assert ep.auth["pkce"] is True and ep.auth["dcr"] is True
+    assert any("OAuth 2.1 protected" in f for f in ep.findings)
+
+
+def test_auth_probe_nonstandard():
+    with running_auth_server(standard=False) as port:
+        eps = scan(["127.0.0.1"], [port], paths=["/mcp"], auth_probe=True)
+    assert eps[0].auth["status"] == "non-standard"
+    assert any("non-standard" in f for f in eps[0].findings)
 
 
 def test_stdio_scan():

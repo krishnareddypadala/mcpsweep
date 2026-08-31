@@ -112,6 +112,7 @@ class MCPEndpoint:
     findings: list = field(default_factory=list)       # list[str]
     aliases: list = field(default_factory=list)        # other URLs for the same server
     command: list = field(default_factory=list)        # stdio argv, when transport == "stdio"
+    auth: dict = field(default_factory=dict)           # OAuth/auth-spec detail (0.5.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -281,7 +282,8 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
                              auth_required=True, server_name="(auth required)")
             ep.server_header = r.headers.get("server", "")
             ep.powered_by = r.headers.get("x-powered-by", "")
-            ep.findings.append("endpoint requires authentication (good)")
+            ep.auth = {"status": "auth-required", "www_authenticate": body.get("__www__", "")}
+            ep.findings.append("endpoint requires authentication")
             return ep
         return None
 
@@ -358,8 +360,14 @@ def _analyze_tool(t):
                     freeform_params=freeform, injection_surface=injection)
 
 
-def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False, headers=None):
+def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
+                       headers=None, auth_probe=False):
     if ep.auth_required:
+        if auth_probe:
+            from .authmeta import probe_auth
+            ep.auth = probe_auth(ep.url, (ep.auth or {}).get("www_authenticate", ""),
+                                 proxy, timeout, insecure)
+        _score(ep)
         return ep
     _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
 
@@ -386,6 +394,16 @@ def _score(ep):
     score = 0
     if not ep.auth_required and not ep.authenticated and ep.transport != "stdio":
         score += 20
+    st = (ep.auth or {}).get("status")
+    if st == "oauth2.1":
+        ep.findings.append("properly OAuth 2.1 protected (MCP auth spec)")
+    elif st == "misconfig":
+        score += 10
+        ep.findings.append("OAuth misconfiguration: "
+                           + ", ".join(ep.auth.get("issues") or ["incomplete metadata"]))
+    elif st == "non-standard":
+        score += 6
+        ep.findings.append("auth required but no OAuth discovery metadata (non-standard)")
     if ep.instructions_poisoned:
         score += 20
         ep.findings.append("server instructions contain injected content")
@@ -498,7 +516,7 @@ def parse_ports(spec):
 
 def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
          concurrency=16, insecure=False, full=False, headers=None, exclude=None,
-         retries=2, on_found=None, on_diag=None):
+         retries=2, on_found=None, on_diag=None, auth_probe=False):
     """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
     Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
@@ -533,7 +551,7 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
             ep = fut.result()
             if ep is None:
                 continue
-            enumerate_endpoint(ep, proxy, timeout, insecure, full, headers)
+            enumerate_endpoint(ep, proxy, timeout, insecure, full, headers, auth_probe)
             found.append(ep)
             if on_found:
                 on_found(ep)

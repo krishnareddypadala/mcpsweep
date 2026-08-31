@@ -16,6 +16,7 @@ _RULES = {
     "dangerous-tool": ("High-impact tool exposed (rce/sql/money/destructive)", "warning"),
     "injection-surface": ("Free-form input on a high-impact tool", "warning"),
     "risky-name": ("Server name suggests elevated/untrusted purpose", "note"),
+    "auth-misconfig": ("Authentication is misconfigured or non-standard", "warning"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -36,6 +37,8 @@ def _rule_for(finding: str):
         return "dangerous-tool"
     if "elevated/untrusted purpose" in f:
         return "risky-name"
+    if "oauth misconfiguration" in f or "non-standard" in f:
+        return "auth-misconfig"
     return "discovery"
 
 

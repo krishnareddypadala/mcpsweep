@@ -37,6 +37,14 @@ def render_console(endpoints, elapsed):
             out.append(f"    {C.DIM}aliases :{C.Z} {', '.join(ep.aliases)}")
         if ep.auth_required:
             out.append(f"    {C.DIM}server  :{C.Z} (authentication required — not enumerated)")
+            a = ep.auth or {}
+            if a.get("status") and a["status"] != "auth-required":
+                line = f"    {C.DIM}auth    :{C.Z} {a['status']}"
+                if a.get("scopes"):
+                    line += f"  scopes={','.join(a['scopes'][:6])}"
+                if "pkce" in a:
+                    line += f"  pkce={'yes' if a.get('pkce') else 'no'}"
+                out.append(line)
         else:
             out.append(f"    {C.DIM}server  :{C.Z} {ep.server_name}  v{ep.server_version}  "
                        f"proto={ep.protocol}  transport={ep.transport}")
@@ -170,6 +178,8 @@ def build_parser():
     p.add_argument("--timeout", type=float, default=8.0, help="per-request timeout seconds")
     p.add_argument("--concurrency", "-c", type=int, default=16, help="parallel probes")
     p.add_argument("--full", action="store_true", help="also enumerate resources and prompts")
+    p.add_argument("--auth-probe", action="store_true",
+                   help="for auth-gated servers, fetch OAuth metadata (RFC 9728/8414) and classify; implied by --full")
     p.add_argument("--severity", choices=list(SEV_ORDER), help="only report endpoints at/above this level")
     p.add_argument("--fail-on", choices=list(SEV_ORDER),
                    help="exit code 2 if any endpoint is at/above this level (for CI)")
@@ -331,7 +341,8 @@ def main(argv=None):
     try:
         endpoints = scan(targets, ports, paths, schemes, proxy=args.proxy, timeout=args.timeout,
                          concurrency=args.concurrency, insecure=args.insecure, full=args.full,
-                         headers=headers, exclude=exclude, on_found=live, on_diag=diag)
+                         headers=headers, exclude=exclude, on_found=live, on_diag=diag,
+                         auth_probe=(args.auth_probe or args.full))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
