@@ -33,6 +33,8 @@ def render_console(endpoints, elapsed):
         col = LEVEL_COLOR.get(ep.risk_level, "")
         out.append(f"\n{C.OK}[MCP]{C.Z} {C.BOLD}{ep.url}{C.Z}  "
                    f"{col}{ep.risk_level.upper()}{C.Z} (score {ep.risk_score})")
+        if ep.aliases:
+            out.append(f"    {C.DIM}aliases :{C.Z} {', '.join(ep.aliases)}")
         if ep.auth_required:
             out.append(f"    {C.DIM}server  :{C.Z} (authentication required — not enumerated)")
         else:

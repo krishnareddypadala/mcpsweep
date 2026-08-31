@@ -110,6 +110,7 @@ class MCPEndpoint:
     risk_score: int = 0
     risk_level: str = "info"
     findings: list = field(default_factory=list)       # list[str]
+    aliases: list = field(default_factory=list)        # other URLs for the same server
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -214,11 +215,12 @@ def _rpc_retry(url, payload, proxy, timeout, session, insecure, headers, retries
 # --- handshake + enumeration -------------------------------------------------
 
 def _init_payload():
+    from . import __version__  # local import avoids a package-init cycle
     return {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {
             "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
-            "clientInfo": {"name": "mcpsweep", "version": "0.2.0"},
+            "clientInfo": {"name": "mcpsweep", "version": __version__},
         },
     }
 
@@ -440,6 +442,45 @@ def expand_targets(targets):
     return uniq
 
 
+def _canonical_path(path):
+    return path.rstrip("/") or "/"
+
+
+def dedupe(found):
+    """Collapse endpoints that are the same server reached via twin URLs.
+
+    Level 1 — trailing-slash twins: same (scheme, host, port, normalised path).
+    Level 2 — same server (name, version, tool-set) on the same host:port via
+    different paths. The canonical endpoint keeps the shortest path; the others'
+    URLs are recorded in ``aliases``.
+    """
+    def merge(group):
+        group.sort(key=lambda e: (len(e.path), e.path))
+        canon = group[0]
+        for other in group[1:]:
+            for u in [other.url] + list(other.aliases):
+                if u != canon.url and u not in canon.aliases:
+                    canon.aliases.append(u)
+        return canon
+
+    # level 1
+    by_url = {}
+    for ep in found:
+        by_url.setdefault((ep.scheme, ep.host, ep.port, _canonical_path(ep.path)), []).append(ep)
+    level1 = [merge(g) for g in by_url.values()]
+
+    # level 2 (only for fully-fingerprinted endpoints)
+    by_sig, passthru = {}, []
+    for ep in level1:
+        if ep.auth_required or ep.server_name in ("?", "(auth required)"):
+            passthru.append(ep)
+            continue
+        sig = (ep.scheme, ep.host, ep.port, ep.server_name, ep.server_version,
+               tuple(sorted(t.name for t in ep.tools)))
+        by_sig.setdefault(sig, []).append(ep)
+    return passthru + [merge(g) for g in by_sig.values()]
+
+
 def parse_ports(spec):
     ports = set()
     for part in str(spec).split(","):
@@ -495,5 +536,6 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
             found.append(ep)
             if on_found:
                 on_found(ep)
+    found = dedupe(found)
     found.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
     return found

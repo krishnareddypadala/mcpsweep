@@ -11,12 +11,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import mcpsweep
 from mcpsweep import scan
 from mcpsweep import diff as _diff
 from mcpsweep import report as _report
 from mcpsweep.cli import _read_target_file
 from mcpsweep.scanner import (
-    POISON_RE, _analyze_tool, expand_targets, parse_ports,
+    POISON_RE, MCPEndpoint, ToolInfo, _analyze_tool, _init_payload, dedupe,
+    expand_targets, parse_ports,
 )
 
 TOOLS = [
@@ -123,6 +125,44 @@ def test_analyze_tool_flags():
 
 
 # --- integration tests -------------------------------------------------------
+
+def test_init_payload_reports_real_version():
+    v = _init_payload()["params"]["clientInfo"]["version"]
+    assert v == mcpsweep.__version__ and v != ""
+
+
+def _ep(path, name="srv", tools=("a", "b")):
+    e = MCPEndpoint(url=f"http://h:1{path}", host="h", port=1, path=path, scheme="http",
+                    server_name=name)
+    e.tools = [ToolInfo(name=t) for t in tools]
+    return e
+
+
+def test_dedupe_trailing_slash_twins():
+    out = dedupe([_ep("/mcp"), _ep("/mcp/")])
+    assert len(out) == 1
+    assert out[0].path == "/mcp"                       # canonical keeps shortest
+    assert "http://h:1/mcp/" in out[0].aliases
+
+
+def test_dedupe_same_server_different_path():
+    out = dedupe([_ep("/mcp"), _ep("/message")])       # same fingerprint, 2 paths
+    assert len(out) == 1
+    assert "http://h:1/message" in out[0].aliases
+
+
+def test_dedupe_keeps_distinct_servers():
+    out = dedupe([_ep("/mcp/api", name="api", tools=("x",)),
+                  _ep("/mcp/db", name="db", tools=("y",))])
+    assert len(out) == 2
+
+
+def test_scan_dedupes_endpoint():
+    with running_server() as port:                     # fixture answers /mcp and /mcp/
+        eps = scan(["127.0.0.1"], [port], paths=["/mcp", "/mcp/"])
+    assert len(eps) == 1
+    assert any(a.endswith("/mcp/") for a in eps[0].aliases)
+
 
 def test_scan_discovers_and_scores():
     with running_server() as port:
