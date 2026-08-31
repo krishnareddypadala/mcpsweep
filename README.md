@@ -71,6 +71,10 @@ mcpsweep 10.10.0.31 --ports 8090 --format html  -o report.html
 mcpsweep 10.10.0.31 --ports 8090 --deep
 mcpsweep 10.10.0.31 --ports 8090 --read-resources   # also scan resource contents
 
+# baseline as policy: freeze the sanctioned inventory, then gate on drift
+mcpsweep 10.10.0.31 --ports 8090 --write-baseline baseline.json
+mcpsweep 10.10.0.31 --ports 8090 --baseline baseline.json --fail-on-policy
+
 # CI gates: only show high+, fail the build on any critical
 mcpsweep 10.10.0.31 --ports 8090 --severity high --fail-on critical
 
@@ -99,12 +103,15 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--read-resources` | also fetch resource contents and scan for secrets/injection (implies `--deep`) |
 | `--severity` | only report endpoints at/above a level |
 | `--fail-on` | exit `2` if any endpoint is at/above a level (CI gate) |
+| `--baseline FILE` | evaluate the scan against a JSON baseline/policy (shadow servers, tool allowlist, rules) |
+| `--write-baseline FILE` | generate a baseline from this scan (bootstrap) |
+| `--fail-on-policy` | exit `4` if any baseline/policy violation |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
 | `--verbose`/`-v` | explain probe misses: `-v` shows HTTP responses that weren't MCP (401, 404, redirect…), `-vv` also shows connection errors |
 | `--concurrency`/`-c` | parallel probes (default 16) |
 
 Exit codes: `0` found (or clean), `1` nothing found, `2` `--fail-on` threshold hit,
-`3` drift found (`diff --fail-on-drift`).
+`3` drift found (`diff --fail-on-drift`), `4` `--fail-on-policy` violation.
 
 ### Drift detection
 

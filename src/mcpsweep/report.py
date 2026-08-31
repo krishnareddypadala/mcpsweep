@@ -27,6 +27,12 @@ _RULES = {
     "confused-deputy": ("Tool instructs calling another tool", "warning"),
     "file-exposure": ("Resource exposes a local/sensitive path", "warning"),
     "resource-template": ("Templated resource URI (traversal/SSRF surface)", "note"),
+    "shadow-server": ("Server not in the sanctioned baseline", "error"),
+    "unexpected-tool": ("Tool not in the baseline allowlist", "warning"),
+    "policy-require-auth": ("Policy requires authentication", "error"),
+    "policy-deny-tag": ("Tool has a policy-denied capability", "error"),
+    "policy-poisoned": ("Policy forbids poisoned tools/instructions", "error"),
+    "policy-max-risk": ("Endpoint exceeds the policy max risk", "warning"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -66,7 +72,7 @@ def _rule_for(finding: str):
     return "discovery"
 
 
-def render_sarif(endpoints, scope=""):
+def render_sarif(endpoints, scope="", violations=None):
     results = []
     for ep in endpoints:
         findings = ep.findings or ["MCP endpoint discovered"]
@@ -80,6 +86,14 @@ def render_sarif(endpoints, scope=""):
                     "artifactLocation": {"uri": ep.url}}}],
                 "properties": {"riskLevel": ep.risk_level, "riskScore": ep.risk_score},
             })
+    for v in (violations or []):
+        rid = v["rule"]
+        results.append({
+            "ruleId": rid,
+            "level": _RULES.get(rid, ("", "warning"))[1],
+            "message": {"text": v["detail"]},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": v["endpoint"]}}}],
+        })
     return json.dumps({
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",

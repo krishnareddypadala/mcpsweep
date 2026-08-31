@@ -453,6 +453,34 @@ def test_vscode_servers_urls(tmp_path):
     assert _read_target_file(str(p)) == ["http://h:9/mcp"]
 
 
+def test_policy_shadow_and_allowlist():
+    from mcpsweep import policy as _policy
+    known = _ep("/mcp", name="known", tools=("a", "b"))
+    rogue = _ep("/other", name="rogue", tools=("x",))
+    pol = {"servers": [{"match": {"url": "http://h:1/mcp"}, "allow_tools": ["a"]}], "rules": {}}
+    rules = {v["rule"] for v in _policy.evaluate([known, rogue], pol)}
+    assert "shadow-server" in rules          # rogue not in baseline
+    assert "unexpected-tool" in rules        # known has 'b' outside allowlist
+
+
+def test_policy_rules():
+    from mcpsweep import policy as _policy
+    e = _ep("/mcp", name="s", tools=("run",))
+    e.tools[0].tags = ["rce"]
+    e.risk_level = "critical"
+    pol = {"servers": [{"match": {"server_name": "s"}, "allow_any_tool": True}],
+           "rules": {"require_auth": True, "deny_tags": ["rce"], "max_risk": "medium"}}
+    rules = {v["rule"] for v in _policy.evaluate([e], pol)}
+    assert {"policy-require-auth", "policy-deny-tag", "policy-max-risk"} <= rules
+
+
+def test_write_baseline_roundtrip():
+    from mcpsweep import policy as _policy
+    e = _ep("/mcp", name="s", tools=("a", "b"))
+    bl = _policy.write_baseline([e])
+    assert _policy.evaluate([e], bl) == []   # a scan matches its own generated baseline
+
+
 def test_diff(tmp_path):
     a = {"endpoints": [{"url": "u1", "risk_level": "high",
                         "tools": [{"name": "x", "poisoned": False}]}]}

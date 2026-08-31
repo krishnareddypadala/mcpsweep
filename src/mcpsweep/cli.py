@@ -27,7 +27,7 @@ class C:
 LEVEL_COLOR = {"critical": C.CRIT, "high": C.WARN, "medium": C.WARN, "low": C.DIM, "info": C.DIM}
 
 
-def render_console(endpoints, elapsed):
+def render_console(endpoints, elapsed, violations=None):
     out = []
     for ep in endpoints:
         col = LEVEL_COLOR.get(ep.risk_level, "")
@@ -87,18 +87,23 @@ def render_console(endpoints, elapsed):
     crit = sum(1 for e in endpoints if e.risk_level == "critical")
     out.append(f"\n{C.HEAD}== {len(endpoints)} endpoint(s) in {elapsed:.1f}s "
                f"({crit} critical) =={C.Z}")
+    if violations:
+        out.append(f"\n{C.WARN}== policy: {len(violations)} violation(s) =={C.Z}")
+        for v in violations:
+            out.append(f"  {C.CRIT}![{C.Z} {v['rule']}: {v['detail']} {C.DIM}({v['endpoint']}){C.Z}")
     return "\n".join(out)
 
 
-def render_json(endpoints, elapsed, scope):
+def render_json(endpoints, elapsed, scope, violations=None):
     return json.dumps({
         "tool": "mcpsweep", "version": __version__, "scope": scope,
         "elapsed_s": round(elapsed, 2), "endpoint_count": len(endpoints),
         "endpoints": [e.to_dict() for e in endpoints],
+        "policy_violations": violations or [],
     }, indent=2)
 
 
-def render_markdown(endpoints, elapsed, scope):
+def render_markdown(endpoints, elapsed, scope, violations=None):
     L = ["# MCP discovery report", "",
          f"- **scope:** `{scope}`", f"- **endpoints found:** {len(endpoints)}",
          f"- **scan time:** {elapsed:.1f}s", "",
@@ -132,6 +137,11 @@ def render_markdown(endpoints, elapsed, scope):
             for t in ep.tools:
                 L.append(f"| `{t.name}` | {', '.join(t.tags) or '—'} | "
                          f"{'⚠️ yes' if t.poisoned else 'no'} | {', '.join(t.freeform_params) or '—'} |")
+        L.append("")
+    if violations:
+        L += ["## Policy violations", "", "| Rule | Detail | Endpoint |", "|---|---|---|"]
+        for v in violations:
+            L.append(f"| `{v['rule']}` | {v['detail']} | `{v['endpoint']}` |")
         L.append("")
     return "\n".join(L)
 
@@ -192,6 +202,10 @@ def build_parser():
     p.add_argument("--severity", choices=list(SEV_ORDER), help="only report endpoints at/above this level")
     p.add_argument("--fail-on", choices=list(SEV_ORDER),
                    help="exit code 2 if any endpoint is at/above this level (for CI)")
+    p.add_argument("--baseline", metavar="FILE", help="evaluate the scan against a JSON baseline/policy")
+    p.add_argument("--write-baseline", metavar="FILE",
+                   help="write a baseline policy generated from this scan (bootstrap)")
+    p.add_argument("--fail-on-policy", action="store_true", help="exit 4 if any baseline/policy violation")
     p.add_argument("--format", "-f", choices=["text", "json", "md", "sarif", "html"], default="text")
     p.add_argument("--output", "-o", help="write report to a file instead of stdout")
     p.add_argument("--no-color", action="store_true")
@@ -379,20 +393,38 @@ def main(argv=None):
 
     elapsed = time.time() - t0
 
+    policy_violations = []
+    if args.write_baseline:
+        from . import policy as _policy
+        try:
+            with open(args.write_baseline, "w", encoding="utf-8") as fh:
+                json.dump(_policy.write_baseline(endpoints), fh, indent=2)
+            print(f"wrote baseline {args.write_baseline} ({len(endpoints)} servers)", file=sys.stderr)
+        except OSError as e:
+            print(f"error: cannot write baseline: {e}", file=sys.stderr)
+    if args.baseline:
+        from . import policy as _policy
+        try:
+            pol = _policy.load_policy(args.baseline)
+        except Exception as e:
+            print(f"error: cannot load baseline {args.baseline}: {e}", file=sys.stderr)
+            return 2
+        policy_violations = _policy.evaluate(endpoints, pol)
+
     if args.severity:
         thr = SEV_ORDER[args.severity]
         endpoints = [e for e in endpoints if SEV_ORDER.get(e.risk_level, 0) >= thr]
 
     if args.format == "json":
-        out = render_json(endpoints, elapsed, scope)
+        out = render_json(endpoints, elapsed, scope, policy_violations)
     elif args.format == "md":
-        out = render_markdown(endpoints, elapsed, scope)
+        out = render_markdown(endpoints, elapsed, scope, policy_violations)
     elif args.format == "sarif":
-        out = _report.render_sarif(endpoints, scope)
+        out = _report.render_sarif(endpoints, scope, policy_violations)
     elif args.format == "html":
         out = _report.render_html(endpoints, scope, elapsed)
     else:
-        out = render_console(endpoints, elapsed)
+        out = render_console(endpoints, elapsed, policy_violations)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -401,6 +433,8 @@ def main(argv=None):
     else:
         print(out)
 
+    if args.fail_on_policy and policy_violations:
+        return 4
     if args.fail_on:
         thr = SEV_ORDER[args.fail_on]
         if any(SEV_ORDER.get(e.risk_level, 0) >= thr for e in endpoints):
