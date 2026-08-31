@@ -83,6 +83,7 @@ class ToolInfo:
     poisoned: bool = False
     freeform_params: list = field(default_factory=list)
     injection_surface: bool = False
+    param_vulns: list = field(default_factory=list)    # [{param, class, why}] (0.6.0 --deep)
 
 
 @dataclass
@@ -113,6 +114,7 @@ class MCPEndpoint:
     aliases: list = field(default_factory=list)        # other URLs for the same server
     command: list = field(default_factory=list)        # stdio argv, when transport == "stdio"
     auth: dict = field(default_factory=dict)           # OAuth/auth-spec detail (0.5.0)
+    resource_findings: list = field(default_factory=list)  # [{uri, class, detail}] (0.6.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -361,7 +363,8 @@ def _analyze_tool(t):
 
 
 def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
-                       headers=None, auth_probe=False):
+                       headers=None, auth_probe=False, deep=False, read_resources=False,
+                       deep_max_bytes=65536, deep_max_resources=50):
     if ep.auth_required:
         if auth_probe:
             from .authmeta import probe_auth
@@ -371,10 +374,12 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
         return ep
     _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
 
-    for raw in _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure, headers):
+    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure, headers)
+    for raw in raw_tools:
         ep.tools.append(_analyze_tool(raw))
 
-    if full:
+    res = pr = templates = []
+    if full or deep:
         res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout, insecure, headers)
         ep.resources = [r.get("uri", r.get("name", "?")) for r in res]
         for r in res:
@@ -385,6 +390,13 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
         for p in pr:
             if POISON_RE.search(json.dumps(p)):
                 ep.findings.append(f"prompt looks POISONED: {p.get('name','?')}")
+
+    if deep:
+        templates = _list(ep.url, "resources/templates/list", "resourceTemplates",
+                          ep.session_id, proxy, timeout, insecure, headers)
+        from . import deep as _deep
+        _deep.run(ep, raw_tools, res, templates, pr, read_resources,
+                  proxy, timeout, insecure, headers, deep_max_bytes, deep_max_resources)
 
     _score(ep)
     return ep
@@ -430,6 +442,11 @@ def _score(ep):
     hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
     if hint:
         ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")
+    # deep-analysis (0.6.0) contributions
+    score += 8 * sum(len(t.param_vulns) for t in ep.tools)
+    score += 8 * len(ep.resource_findings)
+    score += 5 * sum(1 for f in ep.findings
+                     if f.startswith(("annotation-mismatch", "confused-deputy", "prompt-injection-surface")))
     ep.risk_score = score
     ep.risk_level = ("critical" if score >= 60 else "high" if score >= 35
                      else "medium" if score >= 15 else "low")
@@ -516,7 +533,8 @@ def parse_ports(spec):
 
 def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
          concurrency=16, insecure=False, full=False, headers=None, exclude=None,
-         retries=2, on_found=None, on_diag=None, auth_probe=False):
+         retries=2, on_found=None, on_diag=None, auth_probe=False,
+         deep=False, read_resources=False, deep_max_bytes=65536, deep_max_resources=50):
     """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
     Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
@@ -551,7 +569,8 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
             ep = fut.result()
             if ep is None:
                 continue
-            enumerate_endpoint(ep, proxy, timeout, insecure, full, headers, auth_probe)
+            enumerate_endpoint(ep, proxy, timeout, insecure, full, headers, auth_probe,
+                               deep, read_resources, deep_max_bytes, deep_max_resources)
             found.append(ep)
             if on_found:
                 on_found(ep)

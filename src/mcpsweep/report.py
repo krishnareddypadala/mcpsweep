@@ -17,6 +17,16 @@ _RULES = {
     "injection-surface": ("Free-form input on a high-impact tool", "warning"),
     "risky-name": ("Server name suggests elevated/untrusted purpose", "note"),
     "auth-misconfig": ("Authentication is misconfigured or non-standard", "warning"),
+    "command-injection": ("Tool parameter is a command-injection sink", "error"),
+    "sqli": ("Tool parameter is a SQL-injection sink", "error"),
+    "path-traversal": ("Tool parameter is a path-traversal sink", "warning"),
+    "ssrf": ("Tool parameter is an SSRF sink", "warning"),
+    "secret-in-resource": ("Resource content leaks a secret or PII", "error"),
+    "stored-injection-resource": ("Resource content contains an injection payload", "error"),
+    "annotation-mismatch": ("Tool annotation misrepresents behaviour", "warning"),
+    "confused-deputy": ("Tool instructs calling another tool", "warning"),
+    "file-exposure": ("Resource exposes a local/sensitive path", "warning"),
+    "resource-template": ("Templated resource URI (traversal/SSRF surface)", "note"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -39,6 +49,20 @@ def _rule_for(finding: str):
         return "risky-name"
     if "oauth misconfiguration" in f or "non-standard" in f:
         return "auth-misconfig"
+    for pfx in ("command-injection", "sqli", "path-traversal", "ssrf",
+                "annotation-mismatch", "confused-deputy"):
+        if f.startswith(pfx):
+            return pfx
+    if f.startswith("prompt-injection-surface"):
+        return "injection-surface"
+    if "injection payload" in f:
+        return "stored-injection-resource"
+    if "secret/credential" in f or "contains pii" in f:
+        return "secret-in-resource"
+    if "local/sensitive path" in f:
+        return "file-exposure"
+    if "templated resource uri" in f:
+        return "resource-template"
     return "discovery"
 
 

@@ -103,7 +103,7 @@ class _StdioClient:
                 pass
 
 
-def probe_stdio(spec, timeout=20.0, full=False):
+def probe_stdio(spec, timeout=20.0, full=False, deep=False):
     """Spawn one stdio MCP server and return an enumerated MCPEndpoint (or None).
 
     ``spec`` = {"command": str, "args": [str], "env": {..}, "cwd": str, "name": str}.
@@ -141,8 +141,22 @@ def probe_stdio(spec, timeout=20.0, full=False):
 
         cli.notify("notifications/initialized")
         tl = cli.request("tools/list", {}, 2)
-        for t in (tl or {}).get("result", {}).get("tools", []) if tl else []:
+        raw_tools = (tl or {}).get("result", {}).get("tools", []) if tl else []
+        for t in raw_tools:
             ep.tools.append(_analyze_tool(t))
+        if deep:
+            from . import deep as _deep
+            names = {t.get("name", "") for t in raw_tools}
+            for ti, raw in zip(ep.tools, raw_tools):
+                ti.param_vulns = _deep.analyze_params(raw, ti.tags)
+                for pv in ti.param_vulns:
+                    ep.findings.append(f"{pv['class']}: {ti.name}({pv['param']}) - {pv['why']}")
+                am = _deep.analyze_annotations(raw, ti.name, ti.tags)
+                if am:
+                    ep.findings.append("annotation-mismatch: " + am)
+                cd = _deep.confused_deputy(ti.name, ti.description, names)
+                if cd:
+                    ep.findings.append("confused-deputy: " + cd)
         if full:
             rl = cli.request("resources/list", {}, 3)
             ep.resources = [r.get("uri", r.get("name", "?"))

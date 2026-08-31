@@ -67,6 +67,10 @@ mcpsweep 10.10.0.31 --ports 8090 --format md    -o report.md
 mcpsweep 10.10.0.31 --ports 8090 --format sarif -o report.sarif
 mcpsweep 10.10.0.31 --ports 8090 --format html  -o report.html
 
+# deep vulnerability analysis (parameter sinks, resource/prompt/annotation risks)
+mcpsweep 10.10.0.31 --ports 8090 --deep
+mcpsweep 10.10.0.31 --ports 8090 --read-resources   # also scan resource contents
+
 # CI gates: only show high+, fail the build on any critical
 mcpsweep 10.10.0.31 --ports 8090 --severity high --fail-on critical
 
@@ -91,6 +95,8 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--insecure`/`-k` | skip TLS verification |
 | `--full` | also enumerate `resources/list` and `prompts/list` |
 | `--auth-probe` | for auth-gated servers, follow OAuth metadata (RFC 9728/8414) and classify (implied by `--full`) |
+| `--deep` | classify parameter sinks (cmd/SQLi/path/SSRF), resource/prompt & annotation risks |
+| `--read-resources` | also fetch resource contents and scan for secrets/injection (implies `--deep`) |
 | `--severity` | only report endpoints at/above a level |
 | `--fail-on` | exit `2` if any endpoint is at/above a level (CI gate) |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
@@ -134,6 +140,10 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
   **free-form string** parameter.
 - **HTTP fingerprint**: `Server` / `X-Powered-By` headers, and server names that
   hint at an elevated or untrusted purpose.
+- **Deep vulnerability analysis** (`--deep`): parameter sinks (command-injection,
+  SQLi, path-traversal, SSRF), sensitive-file resources, prompt-injection surface,
+  annotation mismatches, and confused-deputy tool chaining; with `--read-resources`,
+  scans resource contents for secrets/PII and stored injection.
 
 A per-endpoint **risk score** rolls these up into `low / medium / high / critical`.
 

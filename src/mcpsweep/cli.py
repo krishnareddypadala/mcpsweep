@@ -65,7 +65,10 @@ def render_console(endpoints, elapsed):
                 flags = ""
                 if t.poisoned:
                     flags += f"  {C.CRIT}<-- POISONED{C.Z}"
-                if t.injection_surface:
+                if t.param_vulns:
+                    classes = ",".join(sorted({pv["class"] for pv in t.param_vulns}))
+                    flags += f"  {C.CRIT}<-- {classes}{C.Z}"
+                elif t.injection_surface:
                     flags += f"  {C.WARN}<-- free-form input ({','.join(t.freeform_params)}){C.Z}"
                 out.append(f"      - {t.name}{tagstr}{flags}")
             if ep.resources:
@@ -180,6 +183,12 @@ def build_parser():
     p.add_argument("--full", action="store_true", help="also enumerate resources and prompts")
     p.add_argument("--auth-probe", action="store_true",
                    help="for auth-gated servers, fetch OAuth metadata (RFC 9728/8414) and classify; implied by --full")
+    p.add_argument("--deep", action="store_true",
+                   help="deep analysis: classify parameter sinks, resource/prompt & annotation risks")
+    p.add_argument("--read-resources", action="store_true",
+                   help="also fetch resource contents and scan for secrets/injection (implies --deep; light-dynamic)")
+    p.add_argument("--deep-max-bytes", type=int, default=65536, help="max bytes read per resource (default 64K)")
+    p.add_argument("--deep-max-resources", type=int, default=50, help="max resources fetched (default 50)")
     p.add_argument("--severity", choices=list(SEV_ORDER), help="only report endpoints at/above this level")
     p.add_argument("--fail-on", choices=list(SEV_ORDER),
                    help="exit code 2 if any endpoint is at/above this level (for CI)")
@@ -342,7 +351,9 @@ def main(argv=None):
         endpoints = scan(targets, ports, paths, schemes, proxy=args.proxy, timeout=args.timeout,
                          concurrency=args.concurrency, insecure=args.insecure, full=args.full,
                          headers=headers, exclude=exclude, on_found=live, on_diag=diag,
-                         auth_probe=(args.auth_probe or args.full))
+                         auth_probe=(args.auth_probe or args.full),
+                         deep=(args.deep or args.read_resources), read_resources=args.read_resources,
+                         deep_max_bytes=args.deep_max_bytes, deep_max_resources=args.deep_max_resources)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
@@ -354,7 +365,8 @@ def main(argv=None):
                   file=sys.stderr)
         for spec in stdio_specs:
             try:
-                ep = probe_stdio(spec, timeout=args.stdio_timeout, full=args.full)
+                ep = probe_stdio(spec, timeout=args.stdio_timeout, full=args.full,
+                                 deep=(args.deep or args.read_resources))
             except KeyboardInterrupt:
                 break
             if ep:
