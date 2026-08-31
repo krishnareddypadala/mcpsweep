@@ -151,6 +151,14 @@ def build_parser():
                    help="targets file: one-per-line text (# comments) OR JSON "
                         "(array, {\"targets\":[...]}, or a prior mcpsweep report)")
     p.add_argument("--exclude", help="comma-separated hosts to skip")
+    p.add_argument("--stdio", action="append", metavar="CMD",
+                   help="spawn a stdio MCP server and scan it, e.g. --stdio \"npx -y @scope/mcp\" (repeatable)")
+    p.add_argument("--include-stdio", action="store_true",
+                   help="also spawn the stdio servers found in an mcpServers/servers config (-iL)")
+    p.add_argument("--yes-run-untrusted", action="store_true",
+                   help="required to spawn stdio servers — they run third-party code")
+    p.add_argument("--stdio-timeout", type=float, default=20.0,
+                   help="per-request timeout for stdio servers (default 20)")
     p.add_argument("--ports", default=",".join(map(str, DEFAULT_PORTS)),
                    help="ports/ranges, e.g. '8090,8000,9000-9010'")
     p.add_argument("--paths", default=",".join(DEFAULT_PATHS), help="comma-separated URL paths")
@@ -202,9 +210,46 @@ def _extract_targets(obj):
         items = obj["endpoints"]
     elif isinstance(obj, dict) and isinstance(obj.get("mcpServers"), dict):
         items = list(obj["mcpServers"].values())
+    elif isinstance(obj, dict) and isinstance(obj.get("servers"), dict):
+        items = list(obj["servers"].values())        # VS Code / others
     else:
         items = []
     return [t for t in (from_item(i) for i in items) if t]
+
+
+def _extract_stdio(obj):
+    """Pull stdio server specs (command/args/env) from an MCP client config."""
+    specs = []
+    for key in ("mcpServers", "servers"):
+        block = obj.get(key) if isinstance(obj, dict) else None
+        if isinstance(block, dict):
+            for name, c in block.items():
+                if isinstance(c, dict) and c.get("command") and not c.get("url"):
+                    specs.append({"name": name, "command": c["command"],
+                                  "args": c.get("args") or [], "env": c.get("env") or {}})
+    return specs
+
+
+def _read_config_stdio(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return []
+    if raw.lstrip()[:1] != "{":
+        return []
+    try:
+        return _extract_stdio(json.loads(raw))
+    except json.JSONDecodeError:
+        return []
+
+
+def _stdio_spec_from_cli(s):
+    import shlex
+    parts = shlex.split(s)
+    if not parts:
+        return None
+    return {"name": None, "command": parts[0], "args": parts[1:], "env": {}}
 
 
 def _read_target_file(path):
@@ -215,15 +260,7 @@ def _read_target_file(path):
             obj = json.loads(raw)
         except json.JSONDecodeError as e:
             raise SystemExit(f"error: {path} looks like JSON but failed to parse: {e}")
-        targets = _extract_targets(obj)
-        # note stdio servers in an mcpServers config — they can't be HTTP-scanned
-        if isinstance(obj, dict) and isinstance(obj.get("mcpServers"), dict):
-            stdio = [n for n, c in obj["mcpServers"].items()
-                     if isinstance(c, dict) and not c.get("url")]
-            if stdio:
-                print(f"note: skipped {len(stdio)} stdio MCP server(s) in {path} "
-                      f"(not HTTP-scannable): {', '.join(stdio)}", file=sys.stderr)
-        return targets
+        return _extract_targets(obj)
     # plain text: one target per line, '#' comments
     out = []
     for line in raw.splitlines():
@@ -240,14 +277,28 @@ def main(argv=None):
 
     args = build_parser().parse_args(argv)
     targets = list(args.targets)
+    config_stdio = []
     if args.target_file:
         targets += _read_target_file(args.target_file)
-    if not targets:
+        config_stdio = _read_config_stdio(args.target_file)
+
+    stdio_specs = [s for s in (_stdio_spec_from_cli(x) for x in (args.stdio or [])) if s]
+    if args.include_stdio:
+        stdio_specs += config_stdio
+    elif config_stdio:
+        names = ", ".join(s["name"] for s in config_stdio)
+        print(f"note: skipped {len(config_stdio)} stdio server(s) (use --include-stdio to scan): {names}",
+              file=sys.stderr)
+    if stdio_specs and not args.yes_run_untrusted:
+        print("error: scanning stdio servers spawns third-party code; pass --yes-run-untrusted to proceed",
+              file=sys.stderr)
+        stdio_specs = []
+
+    if not targets and not stdio_specs:
         if args.target_file:
-            print(f"error: no scannable http/sse targets found in {args.target_file}",
-                  file=sys.stderr)
+            print(f"error: no scannable targets found in {args.target_file}", file=sys.stderr)
         else:
-            print("error: provide at least one target or --target-file", file=sys.stderr)
+            print("error: provide at least one target, --target-file, or --stdio", file=sys.stderr)
         return 2
 
     if args.no_color or args.format != "text" or not sys.stdout.isatty():
@@ -284,6 +335,25 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
+
+    if stdio_specs:
+        from .stdio import probe_stdio
+        if not args.quiet and args.format == "text":
+            print(f"  {C.DIM}spawning {len(stdio_specs)} stdio server(s) — runs third-party code{C.Z}",
+                  file=sys.stderr)
+        for spec in stdio_specs:
+            try:
+                ep = probe_stdio(spec, timeout=args.stdio_timeout, full=args.full)
+            except KeyboardInterrupt:
+                break
+            if ep:
+                endpoints.append(ep)
+                live(ep)
+            elif not args.quiet and args.format == "text":
+                print(f"  {C.WARN}stdio{C.Z} {spec.get('name') or spec['command']}: no MCP response",
+                      file=sys.stderr)
+        endpoints.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
+
     elapsed = time.time() - t0
 
     if args.severity:

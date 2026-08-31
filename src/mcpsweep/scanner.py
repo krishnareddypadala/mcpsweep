@@ -111,6 +111,7 @@ class MCPEndpoint:
     risk_level: str = "info"
     findings: list = field(default_factory=list)       # list[str]
     aliases: list = field(default_factory=list)        # other URLs for the same server
+    command: list = field(default_factory=list)        # stdio argv, when transport == "stdio"
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -383,7 +384,7 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False, 
 
 def _score(ep):
     score = 0
-    if not ep.auth_required and not ep.authenticated:
+    if not ep.auth_required and not ep.authenticated and ep.transport != "stdio":
         score += 20
     if ep.instructions_poisoned:
         score += 20

@@ -51,7 +51,11 @@ mcpsweep http://10.10.0.31:8090/mcp/api
 mcpsweep -iL targets.txt --exclude 10.10.0.5
 mcpsweep -iL targets.json           # ["10.0.0.1", "http://h:8090/mcp"] or {"targets":[...]}
 mcpsweep -iL previous-report.json   # re-scan the endpoints from an earlier JSON report
-mcpsweep -iL claude_desktop_config.json   # your MCP client config (mcpServers) — scans the http/sse servers
+mcpsweep -iL claude_desktop_config.json   # your MCP client config (mcpServers/servers) — scans the http/sse servers
+
+# stdio servers — spawns them, so it runs third-party code (opt-in ack required)
+mcpsweep --stdio "npx -y @scope/mcp" --yes-run-untrusted
+mcpsweep -iL claude_desktop_config.json --include-stdio --yes-run-untrusted   # also spawn the stdio entries
 
 # authenticated scan (servers that require a token)
 mcpsweep 10.10.0.31 --ports 8090 --bearer "$TOKEN"
@@ -74,7 +78,10 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 
 | Flag | Purpose |
 |---|---|
-| `--target-file`/`-iL` | targets from a file: one-per-line text (`#` comments) **or** JSON (array, `{"targets":[…]}`, a prior mcpsweep report, or an MCP client `mcpServers` config — stdio servers are skipped) |
+| `--target-file`/`-iL` | targets from a file: one-per-line text (`#` comments) **or** JSON (array, `{"targets":[…]}`, a prior mcpsweep report, or an MCP client `mcpServers`/`servers` config) |
+| `--stdio "CMD"` | spawn a stdio MCP server and scan it (repeatable) |
+| `--include-stdio` | also spawn the stdio servers found in a config (`-iL`) |
+| `--yes-run-untrusted` | required to spawn stdio servers (they run third-party code) |
 | `--exclude` | comma-separated hosts to skip |
 | `--ports` | ports/ranges, e.g. `8090,8000,9000-9010` |
 | `--paths` | URL paths to probe (defaults cover `/mcp`, `/mcp/api`, `/sse`, …) |

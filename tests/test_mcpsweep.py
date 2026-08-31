@@ -5,6 +5,8 @@ scanner can be exercised end-to-end with no external services.
 """
 import contextlib
 import json
+import os
+import sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -255,6 +257,35 @@ def test_target_file_mcp_client_config(tmp_path):
                  '"pw": {"type": "stdio", "command": "npx", "args": ["-y", "x"]}}}')
     # only the http server is scannable; the stdio one is skipped
     assert _read_target_file(str(p)) == ["https://h/docs/mcp"]
+
+
+def test_stdio_scan():
+    from mcpsweep.stdio import probe_stdio
+    server = os.path.join(os.path.dirname(__file__), "stdio_echo_server.py")
+    ep = probe_stdio({"command": sys.executable, "args": [server], "name": "echo"},
+                     timeout=15, full=True)
+    assert ep is not None
+    assert ep.transport == "stdio" and ep.server_name == "echo-stdio"
+    assert {t.name for t in ep.tools} == {"run", "notes"}
+    assert any(t.poisoned for t in ep.tools)                 # notes description
+    assert any(t.injection_surface for t in ep.tools)        # run(cmd) free-form
+    assert any("supply-chain" in f for f in ep.findings)
+    assert not any("no authentication" in f for f in ep.findings)
+
+
+def test_extract_stdio_from_config(tmp_path):
+    from mcpsweep.cli import _read_config_stdio
+    p = tmp_path / "c.json"
+    p.write_text('{"mcpServers": {"pw": {"command": "npx", "args": ["-y", "x"]}, '
+                 '"http": {"url": "http://h/mcp"}}}')
+    specs = _read_config_stdio(str(p))
+    assert len(specs) == 1 and specs[0]["command"] == "npx" and specs[0]["args"] == ["-y", "x"]
+
+
+def test_vscode_servers_urls(tmp_path):
+    p = tmp_path / "v.json"
+    p.write_text('{"servers": {"a": {"type": "http", "url": "http://h:9/mcp"}}}')
+    assert _read_target_file(str(p)) == ["http://h:9/mcp"]
 
 
 def test_diff(tmp_path):
