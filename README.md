@@ -138,6 +138,12 @@ for ep in scan(["10.10.0.31"], ports=[8090], proxy="http://127.0.0.1:8080"):
         print("  ", t.name, t.tags, "POISONED" if t.poisoned else "")
 ```
 
+## Roadmap
+
+Planned features — stdio scanning, OAuth/auth-spec detection, deep vulnerability
+discovery, policy baselines, and active authz probing — are specced in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## License
 
 MIT
