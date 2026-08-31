@@ -78,6 +78,10 @@ mcpsweep 10.10.0.31 --ports 8090 --baseline baseline.json --fail-on-policy
 # CI gates: only show high+, fail the build on any critical
 mcpsweep 10.10.0.31 --ports 8090 --severity high --fail-on critical
 
+# active verification — CALLS tools; authorized labs only
+mcpsweep 10.10.0.31 --ports 8090 --active --active-dry-run          # preview, calls nothing
+mcpsweep 10.10.0.31 --ports 8090 --active --i-have-authorization    # verify BOLA / secret exposure
+
 # drift detection between two JSON scans (continuous posture monitoring)
 mcpsweep diff yesterday.json today.json --fail-on-drift
 ```
@@ -106,6 +110,10 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--baseline FILE` | evaluate the scan against a JSON baseline/policy (shadow servers, tool allowlist, rules) |
 | `--write-baseline FILE` | generate a baseline from this scan (bootstrap) |
 | `--fail-on-policy` | exit `4` if any baseline/policy violation |
+| `--active` | **calls** safe-read tools to verify BOLA/secret exposure (needs `--i-have-authorization`) |
+| `--active-all` | active-probe **all** tools, not just safe-read (dangerous; labs only) |
+| `--active-dry-run` | preview what active mode would call — calls nothing |
+| `--active-log FILE` | audit log of every active tool call |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
 | `--verbose`/`-v` | explain probe misses: `-v` shows HTTP responses that weren't MCP (401, 404, redirect…), `-vv` also shows connection errors |
 | `--concurrency`/`-c` | parallel probes (default 16) |
@@ -151,6 +159,9 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
   SQLi, path-traversal, SSRF), sensitive-file resources, prompt-injection surface,
   annotation mismatches, and confused-deputy tool chaining; with `--read-resources`,
   scans resource contents for secrets/PII and stored injection.
+- **Verified exploitation** (`--active`, opt-in): actually calls safe-read tools to
+  confirm unauthenticated BOLA/IDOR and real secret/PII exposure — the one mode that
+  isn't read-only, gated behind `--i-have-authorization` (or `--active-dry-run`).
 
 A per-endpoint **risk score** rolls these up into `low / medium / high / critical`.
 

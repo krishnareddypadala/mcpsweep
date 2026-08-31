@@ -115,6 +115,7 @@ class MCPEndpoint:
     command: list = field(default_factory=list)        # stdio argv, when transport == "stdio"
     auth: dict = field(default_factory=dict)           # OAuth/auth-spec detail (0.5.0)
     resource_findings: list = field(default_factory=list)  # [{uri, class, detail}] (0.6.0)
+    active_findings: list = field(default_factory=list)     # verified findings from --active (0.8.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()

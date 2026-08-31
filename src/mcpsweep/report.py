@@ -33,6 +33,8 @@ _RULES = {
     "policy-deny-tag": ("Tool has a policy-denied capability", "error"),
     "policy-poisoned": ("Policy forbids poisoned tools/instructions", "error"),
     "policy-max-risk": ("Endpoint exceeds the policy max risk", "warning"),
+    "active-bola": ("Verified BOLA/IDOR (tool was called)", "error"),
+    "active-secret-exposure": ("Verified secret/PII exposure (tool was called)", "error"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -55,6 +57,10 @@ def _rule_for(finding: str):
         return "risky-name"
     if "oauth misconfiguration" in f or "non-standard" in f:
         return "auth-misconfig"
+    if "confirmed bola" in f:
+        return "active-bola"
+    if "confirmed secret" in f:
+        return "active-secret-exposure"
     for pfx in ("command-injection", "sqli", "path-traversal", "ssrf",
                 "annotation-mismatch", "confused-deputy"):
         if f.startswith(pfx):

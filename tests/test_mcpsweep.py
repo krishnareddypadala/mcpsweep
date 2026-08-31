@@ -222,6 +222,73 @@ def running_deep_server():
         srv.shutdown()
 
 
+ACTIVE_TOOLS = [
+    {"name": "get-account", "description": "Get an account by number.",
+     "inputSchema": {"type": "object", "properties": {"acno": {"type": "integer"}}, "required": ["acno"]}},
+    {"name": "get-config", "description": "Get config.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "delete-thing", "description": "Delete a thing.",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}},
+]
+
+
+def make_active_handler(calls):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _s(self, i, result):
+            b = json.dumps({"jsonrpc": "2.0", "id": i, "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_POST(self):
+            if self.path.rstrip("/") != "/mcp":
+                self.send_response(404); self.end_headers(); return
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            req = json.loads(self.rfile.read(n) or b"{}")
+            m, i = req.get("method"), req.get("id")
+            if m == "initialize":
+                self._s(i, {"protocolVersion": "2024-11-05", "capabilities": {},
+                            "serverInfo": {"name": "active-server", "version": "1.0"}})
+            elif m == "notifications/initialized":
+                self.send_response(202); self.end_headers()
+            elif m == "tools/list":
+                self._s(i, {"tools": ACTIVE_TOOLS})
+            elif m in ("resources/list", "prompts/list", "resources/templates/list"):
+                self._s(i, {m.split("/")[-1].replace("list", "").rstrip("s") + "s"
+                            if False else "resources": []})
+            elif m == "tools/call":
+                params = req.get("params") or {}
+                name = params.get("name")
+                args = params.get("arguments") or {}
+                calls.append(name)
+                if name == "get-account":
+                    text = "account %s: holder-%s" % (args.get("acno"), args.get("acno"))
+                elif name == "get-config":
+                    text = "AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE"
+                else:
+                    text = "ok"
+                self._s(i, {"content": [{"type": "text", "text": text}]})
+            elif i is not None:
+                self._s(i, {})
+    return H
+
+
+@contextlib.contextmanager
+def running_active_server(calls):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_active_handler(calls))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        srv.shutdown()
+
+
 # --- unit tests --------------------------------------------------------------
 
 def test_parse_ports():
@@ -379,6 +446,37 @@ def test_target_file_mcp_client_config(tmp_path):
                  '"pw": {"type": "stdio", "command": "npx", "args": ["-y", "x"]}}}')
     # only the http server is scannable; the stdio one is skipped
     assert _read_target_file(str(p)) == ["https://h/docs/mcp"]
+
+
+def test_active_bola_and_secret():
+    from mcpsweep import active as _active
+    calls = []
+    with running_active_server(calls) as port:
+        eps = scan(["127.0.0.1"], [port], paths=["/mcp"])
+        ep = eps[0]
+        _active.run(ep, 1, None, 8.0, False, None, 20, False, None)
+    classes = {af["class"] for af in ep.active_findings}
+    assert "bola" in classes                       # get-account(acno) -> distinct records
+    assert "secret-exposure" in classes            # get-config leaks a key
+    assert "delete-thing" not in calls             # tier1 never calls a destructive tool
+    assert ep.risk_level == "critical"
+
+
+def test_active_dry_run_calls_nothing():
+    from mcpsweep import active as _active
+    calls = []
+    with running_active_server(calls) as port:
+        eps = scan(["127.0.0.1"], [port], paths=["/mcp"])
+        _active.run(eps[0], 1, None, 8.0, False, None, 20, True, None)
+    assert calls == []                             # dry-run makes no tools/call
+    assert any("dry-run" in f for f in eps[0].findings)
+
+
+def test_enumeration_never_calls_tools():
+    calls = []
+    with running_active_server(calls) as port:
+        scan(["127.0.0.1"], [port], paths=["/mcp"], deep=True)
+    assert calls == []                             # passive scan never calls a tool
 
 
 def test_deep_analysis():

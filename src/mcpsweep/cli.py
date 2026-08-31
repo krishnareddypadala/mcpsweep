@@ -206,6 +206,16 @@ def build_parser():
     p.add_argument("--write-baseline", metavar="FILE",
                    help="write a baseline policy generated from this scan (bootstrap)")
     p.add_argument("--fail-on-policy", action="store_true", help="exit 4 if any baseline/policy violation")
+    p.add_argument("--active", action="store_true",
+                   help="CALL safe-read tools to VERIFY BOLA/secret exposure (needs --i-have-authorization)")
+    p.add_argument("--active-all", action="store_true",
+                   help="active-probe ALL tools, not just safe-read (dangerous; labs only)")
+    p.add_argument("--i-have-authorization", action="store_true",
+                   help="required ack to actually call tools in active mode")
+    p.add_argument("--active-dry-run", action="store_true",
+                   help="active mode: print what would be called, call nothing")
+    p.add_argument("--active-max-calls", type=int, default=20, help="cap on tool calls in active mode (default 20)")
+    p.add_argument("--active-log", metavar="FILE", help="write an audit log of every active tool call")
     p.add_argument("--format", "-f", choices=["text", "json", "md", "sarif", "html"], default="text")
     p.add_argument("--output", "-o", help="write report to a file instead of stdout")
     p.add_argument("--no-color", action="store_true")
@@ -392,6 +402,31 @@ def main(argv=None):
         endpoints.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
 
     elapsed = time.time() - t0
+
+    if args.active or args.active_all:
+        tier = 2 if args.active_all else 1
+        if not args.active_dry_run and not args.i_have_authorization:
+            print("error: active mode calls tools on the target; pass --i-have-authorization "
+                  "(or --active-dry-run to preview)", file=sys.stderr)
+        else:
+            from . import active as _active
+            audit = [] if args.active_log else None
+            if not args.quiet and args.format == "text":
+                mode = "dry-run" if args.active_dry_run else ("tier2/all" if tier == 2 else "tier1/safe-read")
+                print(f"  {C.WARN}active probing ({mode}) — calls tools on the target{C.Z}", file=sys.stderr)
+            for ep in endpoints:
+                if ep.auth_required or ep.transport == "stdio":
+                    continue
+                _active.run(ep, tier, args.proxy, args.timeout, args.insecure, headers,
+                            args.active_max_calls, args.active_dry_run, audit)
+            endpoints.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
+            if args.active_log and audit is not None:
+                try:
+                    with open(args.active_log, "w", encoding="utf-8") as fh:
+                        json.dump(audit, fh, indent=2)
+                    print(f"wrote active audit log {args.active_log} ({len(audit)} calls)", file=sys.stderr)
+                except OSError as e:
+                    print(f"error: cannot write active log: {e}", file=sys.stderr)
 
     policy_violations = []
     if args.write_baseline:
