@@ -8,6 +8,11 @@ verified exploitation — each additive, opt-in, and independently shippable.
 0.3.1 dedup → 0.4.0 stdio → 0.5.0 oauth → 0.6.0 deep → 0.7.0 baseline → 0.8.0 active
 ```
 
+> **Status: ✅ all shipped.** Every feature below is implemented, tested, and merged
+> on `master` (`stdio.py`, `authmeta.py`, `deep.py`, `policy.py`, `active.py`).
+> Because 0.3.0 was never published, they ship together in the first PyPI release.
+> This document is kept as the design record.
+
 > Effort and LOC are planning estimates, not commitments.
 
 ## Ground rules
