@@ -19,10 +19,18 @@ import urllib.request
 _SHELL_META_RE = re.compile(r"[;&|`$><]|\$\(|\|\||&&")
 
 
-def _unsafe_target(url):
+def _unsafe_target(url, self_host=None):
     """True if a URL points somewhere a scanner must NOT fetch: a non-http(s)
-    scheme, or a host that resolves to a private / loopback / link-local /
-    cloud-metadata address (SSRF). We flag these instead of following them."""
+    scheme, or a host that resolves to a link-local / cloud-metadata address, or
+    an internal address *other than the server's own* (SSRF). We flag these
+    instead of following them.
+
+    ``self_host`` is the hostname of the server being scanned. A server that
+    advertises its OWN (internal) address in its OAuth metadata is the normal
+    case for an internal deployment - not SSRF - so a private address that
+    matches ``self_host`` is treated as a safe self-reference. Link-local and
+    cloud-metadata targets (CVE-2026-51994) are always flagged, even if the
+    server somehow points there itself."""
     try:
         u = urllib.parse.urlparse(url)
     except Exception:
@@ -32,6 +40,7 @@ def _unsafe_target(url):
     host = (u.hostname or "").strip("[]")
     if not host:
         return "no host"
+    is_self = bool(self_host) and host.lower() == self_host.strip("[]").lower()
     cand = []
     try:
         cand.append(ipaddress.ip_address(host))
@@ -46,14 +55,17 @@ def _unsafe_target(url):
             return None   # can't resolve; treat as external (don't over-flag)
     for ip in cand:
         # loopback is NOT flagged: localhost MCP servers are the normal case and
-        # the scanner targets them constantly. The SSRF signal (CVE-2026-51994) is
-        # metadata pointing at link-local / cloud-metadata / internal addresses.
+        # the scanner targets them constantly.
         if ip.is_loopback:
             continue
+        # link-local / cloud-metadata is the real SSRF signal (CVE-2026-51994):
+        # always flagged, even for a self-reference.
         if (ip.is_link_local or ip.is_reserved or ip.is_multicast
                 or str(ip) in ("169.254.169.254", "100.100.100.200")):
             return f"resolves to a link-local/metadata address ({ip})"
-        if ip.is_private:
+        # an ordinary private address that is the server's OWN host is a normal
+        # internal deployment, not SSRF; only a *different* internal host is.
+        if ip.is_private and not is_self:
             return f"resolves to a private/internal address ({ip})"
     return None
 
@@ -89,6 +101,7 @@ def _resource_metadata_url(base_url, www):
 def probe_auth(base_url, www, proxy=None, timeout=8.0, insecure=False):
     """Follow the RFC 9728 → RFC 8414 chain. Returns an ``auth`` dict."""
     out = {"status": "non-standard", "www_authenticate": www}
+    self_host = urllib.parse.urlparse(base_url).hostname
 
     rm_url = _resource_metadata_url(base_url, www)
     rm = _get_json(rm_url, proxy, timeout, insecure)
@@ -105,15 +118,15 @@ def probe_auth(base_url, www, proxy=None, timeout=8.0, insecure=False):
     hygiene = []
 
     # hygiene: the resource_metadata URL itself (CVE-2026-51994 SSRF class)
-    bad = _unsafe_target(rm_url)
+    bad = _unsafe_target(rm_url, self_host)
     if bad:
         hygiene.append(f"resource_metadata URL unsafe to follow - {bad}")
 
     for issuer in servers[:3]:
         base = issuer.rstrip("/")
-        # NEVER fetch a private/link-local/metadata issuer - flag it instead of
-        # becoming an SSRF vector ourselves.
-        bad = _unsafe_target(base)
+        # NEVER fetch a link-local/metadata issuer, or a different internal host -
+        # flag it instead of becoming an SSRF vector ourselves.
+        bad = _unsafe_target(base, self_host)
         if bad:
             hygiene.append(f"authorization server {base!r} - {bad}")
             continue
@@ -136,7 +149,7 @@ def probe_auth(base_url, www, proxy=None, timeout=8.0, insecure=False):
                                   ("registration_endpoint", md.get("registration_endpoint"))):
                 if not ep_url:
                     continue
-                b = _unsafe_target(ep_url)
+                b = _unsafe_target(ep_url, self_host)
                 if b:
                     hygiene.append(f"{label} unsafe - {b}")
                 if _SHELL_META_RE.search(str(ep_url)):

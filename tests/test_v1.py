@@ -130,14 +130,27 @@ def test_is_loopback_helper():
 def test_unsafe_target_helper():
     from mcpsweep.authmeta import _unsafe_target
     assert _unsafe_target("http://169.254.169.254/latest")        # cloud metadata
-    assert _unsafe_target("http://10.0.0.5/as")                   # private
+    assert _unsafe_target("http://10.0.0.5/as")                   # private (different host)
     assert _unsafe_target("javascript:alert(1)")                  # bad scheme
     assert _unsafe_target("http://127.0.0.1:9100/as") is None     # loopback is OK
     assert _unsafe_target("https://auth.example.com/as") is None  # public is OK
 
 
-def test_oauth_metadata_ssrf_flagged_and_not_followed(monkeypatch):
-    monkeypatch.setenv("VULNLAB_OAUTH_SSRF", "1")
+def test_unsafe_target_self_reference_is_safe():
+    """An internal MCP server advertising its OWN private address is the normal
+    case, not SSRF (regression: this false-positived on every LAN deployment).
+    Link-local/cloud-metadata stays flagged even for a self-reference."""
+    from mcpsweep.authmeta import _unsafe_target
+    # same private host as the server being scanned -> safe self-reference
+    assert _unsafe_target("http://10.10.0.31:9100/.well-known/x",
+                          self_host="10.10.0.31") is None
+    # a *different* internal host is still SSRF
+    assert _unsafe_target("http://10.0.0.5/as", self_host="10.10.0.31")
+    # link-local is dangerous even if the server points there itself
+    assert _unsafe_target("http://169.254.169.254/latest", self_host="169.254.169.254")
+
+
+def test_oauth_metadata_ssrf_flagged_and_not_followed():
     with running_vulnlab() as port:
         eps = scan(["127.0.0.1"], ports=[port], paths=["/mcp/oauth-ssrf"], auth_probe=True)
         assert eps
