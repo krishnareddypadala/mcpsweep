@@ -188,3 +188,33 @@ def test_rug_pull_detected_via_diff(tmp_path, monkeypatch):
     rug = [t for c in d["changed"] for t in c.get("rug_pulled", [])]
     assert "weather" in rug
     assert _diff.has_drift(d)
+
+
+# --- Tier 2: offline known-vulnerable version DB ---------------------------
+
+def test_vulndb_matcher_units():
+    from mcpsweep import vulndb
+    assert vulndb._match_constraint("2.1.0", "<2.1.5")
+    assert not vulndb._match_constraint("2.1.5", "<2.1.5")
+    assert vulndb._match_constraint("0.1.35", ">=0.1.32,<0.1.39")
+    assert not vulndb._match_constraint("0.1.16", ">=0.1.32,<0.1.39")
+    # npm scope is stripped for name matching
+    hits = vulndb.match("@cyanheads/git-mcp-server", "2.1.0")
+    assert any(h["id"] == "CVE-2025-53107" for h in hits)
+
+
+def test_known_vulnerable_flagged_on_fingerprint(monkeypatch):
+    monkeypatch.setenv("VULNLAB_NAME", "@cyanheads/git-mcp-server")
+    monkeypatch.setenv("VULNLAB_VERSION", "2.1.0")       # < 2.1.5 => CVE-2025-53107
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/noauth")
+        assert any(a["id"] == "CVE-2025-53107" for a in ep.known_vulns)
+        assert any("known-vulnerable" in f and "CVE-2025-53107" in f for f in ep.findings)
+
+
+def test_known_vulnerable_not_flagged_when_patched(monkeypatch):
+    monkeypatch.setenv("VULNLAB_NAME", "@cyanheads/git-mcp-server")
+    monkeypatch.setenv("VULNLAB_VERSION", "2.1.5")       # patched
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/noauth")
+        assert not ep.known_vulns

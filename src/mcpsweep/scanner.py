@@ -148,6 +148,7 @@ class MCPEndpoint:
     resource_findings: list = field(default_factory=list)  # [{uri, class, detail}] (0.6.0)
     active_findings: list = field(default_factory=list)     # verified findings from --active (0.8.0)
     transport_findings: list = field(default_factory=list)  # [{class, detail}] transport probes (1.0.0)
+    known_vulns: list = field(default_factory=list)          # [advisory dict] offline DB matches (1.0.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -539,6 +540,8 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
     if transport_probe and ep.transport != "stdio":
         from .transport import probe_transport
         probe_transport(ep, proxy, timeout, insecure, headers)
+    from . import vulndb as _vulndb
+    _vulndb.annotate(ep)
     if ep.auth_required:
         if auth_probe:
             from .authmeta import probe_auth
@@ -643,6 +646,12 @@ def _score(ep):
                   "cors-wildcard": 10, "cors-reflect": 8}
     for tf in ep.transport_findings:
         score += _tf_weight.get(tf.get("class"), 5)
+    # known-vulnerable version matches (1.0.0, offline DB)
+    for adv in ep.known_vulns:
+        score += 20
+        ep.findings.append(
+            f"known-vulnerable: {ep.server_name} {ep.server_version} matches "
+            f"{adv['id']} ({adv.get('class', '?')}, CVSS {adv.get('cvss', '?')}) - {adv.get('detail', '')}")
     # deep-analysis (0.6.0) contributions
     score += 8 * sum(len(t.param_vulns) for t in ep.tools)
     score += 8 * len(ep.resource_findings)
