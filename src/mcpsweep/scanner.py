@@ -638,6 +638,16 @@ def _score(ep):
     dangerous = [t for t in ep.tools if set(t.tags) & {"rce", "sql", "money", "destructive"}]
     if dangerous:
         ep.findings.append("high-impact tools exposed: " + ", ".join(t.name for t in dangerous))
+    # toxic flow: sensitive-data access + outbound network on the same server
+    # (private data + egress => exfiltration path). Heuristic, no LLM (Invariant).
+    sources = [t for t in ep.tools if set(t.tags) & {"secret", "pii", "db", "sql", "filesystem"}]
+    egress = [t for t in ep.tools if "network" in t.tags]
+    if sources and egress:
+        score += 10
+        ep.findings.append(
+            "toxic-flow: server exposes both sensitive-data access ("
+            + ", ".join(t.name for t in sources[:3]) + ") and outbound network ("
+            + ", ".join(t.name for t in egress[:3]) + ") - data-exfiltration path")
     hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
     if hint:
         ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")

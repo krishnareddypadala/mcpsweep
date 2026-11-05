@@ -285,6 +285,16 @@ def test_unauthenticated_tasks_probe():
         assert any(tf["class"] == "unauthenticated-tasks" for tf in ep.transport_findings)
 
 
+def test_toxic_flow_tagging():
+    from mcpsweep.scanner import MCPEndpoint, ToolInfo, _score
+    ep = MCPEndpoint(url="http://127.0.0.1/mcp", host="127.0.0.1", port=80, path="/mcp",
+                     scheme="http", server_name="s", server_version="1")
+    ep.tools = [ToolInfo(name="read-secrets", tags=["secret"]),
+                ToolInfo(name="fetch-url", tags=["network"])]
+    _score(ep)
+    assert any(f.startswith("toxic-flow:") for f in ep.findings)
+
+
 def test_plaintext_http_auth_scored():
     from mcpsweep.scanner import MCPEndpoint, _score
     ep = MCPEndpoint(url="http://10.0.0.5:8090/mcp", host="10.0.0.5", port=8090,

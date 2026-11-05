@@ -50,6 +50,7 @@ _RULES = {
     "weak-session": ("Weak or predictable session identifier", "warning"),
     "plaintext-http-auth": ("Credentials accepted over cleartext http:// (non-loopback)", "error"),
     "unauthenticated-tasks": ("tasks/* reachable without auth on an authenticated server", "error"),
+    "toxic-flow": ("Sensitive-data access and outbound network on the same server", "warning"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -82,7 +83,7 @@ def _rule_for(finding: str):
                 "cors-reflect", "lan-exposure", "sibling-endpoint-auth-gap",
                 "oauth-hygiene", "hidden-characters", "rug-pull", "config-lint",
                 "known-vulnerable", "tool-shadowing", "weak-session", "plaintext-http-auth",
-                "unauthenticated-tasks"):
+                "unauthenticated-tasks", "toxic-flow"):
         if f.startswith(pfx):
             return pfx
     if f.startswith("prompt-injection-surface"):
