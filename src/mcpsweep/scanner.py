@@ -535,6 +535,9 @@ def _score(ep):
     if not ep.auth_required and not ep.authenticated and ep.transport != "stdio":
         score += 20
     st = (ep.auth or {}).get("status")
+    for hy in (ep.auth or {}).get("hygiene", []):
+        score += 10
+        ep.findings.append("oauth-hygiene: " + hy)
     if st == "oauth2.1":
         ep.findings.append("properly OAuth 2.1 protected (MCP auth spec)")
     elif st == "misconfig":

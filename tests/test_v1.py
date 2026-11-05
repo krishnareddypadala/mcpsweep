@@ -121,3 +121,25 @@ def test_is_loopback_helper():
     from mcpsweep.transport import _is_loopback
     assert _is_loopback("127.0.0.1") and _is_loopback("localhost") and _is_loopback("::1")
     assert not _is_loopback("10.10.0.31") and not _is_loopback("0.0.0.0")
+
+
+# --- Tier 1: passive OAuth hygiene -----------------------------------------
+
+def test_unsafe_target_helper():
+    from mcpsweep.authmeta import _unsafe_target
+    assert _unsafe_target("http://169.254.169.254/latest")        # cloud metadata
+    assert _unsafe_target("http://10.0.0.5/as")                   # private
+    assert _unsafe_target("javascript:alert(1)")                  # bad scheme
+    assert _unsafe_target("http://127.0.0.1:9100/as") is None     # loopback is OK
+    assert _unsafe_target("https://auth.example.com/as") is None  # public is OK
+
+
+def test_oauth_metadata_ssrf_flagged_and_not_followed(monkeypatch):
+    monkeypatch.setenv("VULNLAB_OAUTH_SSRF", "1")
+    with running_vulnlab() as port:
+        eps = scan(["127.0.0.1"], ports=[port], paths=["/mcp/oauth-ssrf"], auth_probe=True)
+        assert eps
+        ep = eps[0]
+        hy = " ".join((ep.auth or {}).get("hygiene", []))
+        assert "169.254.169.254" in hy and "link-local" in hy
+        assert any(f.startswith("oauth-hygiene:") for f in ep.findings)
