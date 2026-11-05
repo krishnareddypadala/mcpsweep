@@ -480,7 +480,10 @@ def _analyze_tool(t):
 
 def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
                        headers=None, auth_probe=False, deep=False, read_resources=False,
-                       deep_max_bytes=65536, deep_max_resources=50):
+                       deep_max_bytes=65536, deep_max_resources=50, transport_probe=True):
+    if transport_probe and ep.transport != "stdio":
+        from .transport import probe_transport
+        probe_transport(ep, proxy, timeout, insecure, headers)
     if ep.auth_required:
         if auth_probe:
             from .authmeta import probe_auth
@@ -567,6 +570,11 @@ def _score(ep):
     hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
     if hint:
         ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")
+    # transport-probe (1.0.0) contributions
+    _tf_weight = {"dns-rebinding": 18, "cors-reflect-credentials": 18, "lan-exposure": 20,
+                  "cors-wildcard": 10, "cors-reflect": 8}
+    for tf in ep.transport_findings:
+        score += _tf_weight.get(tf.get("class"), 5)
     # deep-analysis (0.6.0) contributions
     score += 8 * sum(len(t.param_vulns) for t in ep.tools)
     score += 8 * len(ep.resource_findings)
@@ -656,10 +664,34 @@ def parse_ports(spec):
     return sorted(p for p in ports if 0 < p < 65536)
 
 
+def _flag_sibling_auth_gaps(found):
+    """Flag endpoints on a host:port where a sibling path enforces auth but this one
+    does not - the CVE-2026-33032 pattern (/mcp protected, /mcp_message open)."""
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for ep in found:
+        groups[(ep.scheme, ep.host, ep.port)].append(ep)
+    for eps in groups.values():
+        authed = [e for e in eps if e.auth_required]
+        openish = [e for e in eps if not e.auth_required and not e.authenticated
+                   and e.server_name not in ("(auth required)",)]
+        if authed and openish:
+            authed_paths = ", ".join(sorted(e.path for e in authed))
+            for e in openish:
+                detail = (f"sibling endpoint(s) require auth ({authed_paths}) but {e.path} "
+                          f"does not - inconsistent authentication (CVE-2026-33032 class)")
+                e.findings.append("sibling-endpoint-auth-gap: " + detail)
+                e.transport_findings.append({"class": "sibling-endpoint-auth-gap", "detail": detail})
+                e.risk_score += 15
+                e.risk_level = ("critical" if e.risk_score >= 60 else "high" if e.risk_score >= 35
+                                else "medium" if e.risk_score >= 15 else "low")
+
+
 def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
          concurrency=16, insecure=False, full=False, headers=None, exclude=None,
          retries=2, on_found=None, on_diag=None, auth_probe=False,
-         deep=False, read_resources=False, deep_max_bytes=65536, deep_max_resources=50):
+         deep=False, read_resources=False, deep_max_bytes=65536, deep_max_resources=50,
+         transport_probe=True):
     """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
     Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
@@ -695,10 +727,12 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
             if ep is None:
                 continue
             enumerate_endpoint(ep, proxy, timeout, insecure, full, headers, auth_probe,
-                               deep, read_resources, deep_max_bytes, deep_max_resources)
+                               deep, read_resources, deep_max_bytes, deep_max_resources,
+                               transport_probe)
             found.append(ep)
             if on_found:
                 on_found(ep)
     found = dedupe(found)
+    _flag_sibling_auth_gaps(found)
     found.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
     return found

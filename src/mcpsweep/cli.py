@@ -191,6 +191,8 @@ def build_parser():
     p.add_argument("--timeout", type=float, default=8.0, help="per-request timeout seconds")
     p.add_argument("--concurrency", "-c", type=int, default=16, help="parallel probes")
     p.add_argument("--full", action="store_true", help="also enumerate resources and prompts")
+    p.add_argument("--no-transport-probe", action="store_true",
+                   help="skip the read-only transport checks (DNS-rebinding, CORS, LAN exposure)")
     p.add_argument("--auth-probe", action="store_true",
                    help="for auth-gated servers, fetch OAuth metadata (RFC 9728/8414) and classify; implied by --full")
     p.add_argument("--deep", action="store_true",
@@ -377,7 +379,8 @@ def main(argv=None):
                          headers=headers, exclude=exclude, on_found=live, on_diag=diag,
                          auth_probe=(args.auth_probe or args.full),
                          deep=(args.deep or args.read_resources), read_resources=args.read_resources,
-                         deep_max_bytes=args.deep_max_bytes, deep_max_resources=args.deep_max_resources)
+                         deep_max_bytes=args.deep_max_bytes, deep_max_resources=args.deep_max_resources,
+                         transport_probe=not args.no_transport_probe)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
