@@ -319,6 +319,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "diff":
         return diff_main(argv[1:])
+    if argv and argv[0] == "lint-config":
+        return lint_config_main(argv[1:])
 
     args = build_parser().parse_args(argv)
     targets = list(args.targets)
@@ -496,6 +498,43 @@ def diff_main(argv):
         print(_diff.render_diff_text(d, color=not a.no_color and sys.stdout.isatty()))
     if a.fail_on_drift and _diff.has_drift(d):
         return 3
+    return 0
+
+
+def lint_config_main(argv):
+    from . import configlint
+    p = argparse.ArgumentParser(prog="mcpsweep lint-config",
+                                description="Statically lint local MCP client config files for "
+                                            "dangerous stdio definitions and plaintext secrets.")
+    p.add_argument("files", nargs="+", help="config file(s): claude_desktop_config.json, mcp.json, ...")
+    p.add_argument("--format", "-f", choices=["text", "json"], default="text")
+    p.add_argument("--no-color", action="store_true")
+    p.add_argument("--fail-on-findings", action="store_true", help="exit 4 if any finding")
+    a = p.parse_args(argv)
+    color = not a.no_color and sys.stdout.isatty()
+    R = "\033[1;31m" if color else ""
+    C = "\033[1;36m" if color else ""
+    Z = "\033[0m" if color else ""
+    results, total = {}, 0
+    for f in a.files:
+        try:
+            found = configlint.lint_config(f)
+        except Exception as e:
+            print(f"error: cannot lint {f}: {e}", file=sys.stderr)
+            continue
+        results[f] = found
+        total += len(found)
+    if a.format == "json":
+        print(json.dumps(results, indent=2))
+    else:
+        for f, found in results.items():
+            print(f"{C}== {f} =={Z}")
+            if not found:
+                print("  no issues")
+            for x in found:
+                print(f"  {R}![{Z} {x['detail']}")
+    if a.fail_on_findings and total:
+        return 4
     return 0
 
 
