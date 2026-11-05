@@ -1,0 +1,18 @@
+# Standalone compose for the mcpsweep vulnlab.
+# To run ON TOP OF phpvulnbank, copy the `vulnlab` service block into the
+# phpvulnbank stack's docker-compose.yml (same network), or run this file
+# alongside it. INTENTIONALLY VULNERABLE — isolated lab networks only.
+services:
+  vulnlab:
+    build: .
+    image: mcpsweep-vulnlab:latest
+    container_name: mcpsweep-vulnlab
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    environment:
+      VULNLAB_HOST: "0.0.0.0"
+      VULNLAB_PORT: "9100"
+      # demo toggles (leave unset for the default scenario set):
+      VULNLAB_OAUTH_SSRF: "1"
+      MCPSWEEP_RUGPULL: "0"
