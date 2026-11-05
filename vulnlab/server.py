@@ -237,17 +237,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    @staticmethod
+    def _host_ok(h):
+        """A legitimately-reachable host: localhost or a bare IP literal (how the
+        server is reached on a LAN). DNS-rebinding uses a *name* that resolves to
+        the target IP, so a validating server rejects arbitrary hostnames."""
+        if not h:
+            return True
+        h = h.strip("[]")
+        if h in ("localhost", "127.0.0.1", "::1"):
+            return True
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", h):   # IPv4 literal
+            return True
+        if ":" in h or re.match(r"^[0-9a-fA-F:]+$", h):  # IPv6 literal
+            return True
+        return False
+
     def _host_bad(self, scn):
-        """A host/origin-validating server rejects foreign Host/Origin (DNS rebinding)."""
+        """A host/origin-validating server rejects a foreign Host/Origin (DNS rebinding)."""
         if not scn.get("validate_host"):
             return False
         host = (self.headers.get("Host", "") or "").split(":")[0]
+        if not self._host_ok(host):
+            return True
         origin = self._origin()
-        allowed = {"localhost", "127.0.0.1", "[::1]", ""}
-        if host and host not in allowed:
-            return True
-        if origin and not re.match(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", origin):
-            return True
+        if origin:
+            oh = re.sub(r"^https?://", "", origin).split("/")[0].split(":")[0]
+            if not self._host_ok(oh):
+                return True
         return False
 
     # -- OPTIONS (CORS preflight) --
@@ -265,20 +282,26 @@ class Handler(BaseHTTPRequestHandler):
         if p in ("/", "/index.json"):
             return self._send({"service": "mcpsweep vulnlab", "warning": "intentionally vulnerable",
                                "endpoints": {k: v["models"] for k, v in SCENARIOS.items()}})
-        if p == "/.well-known/oauth-protected-resource" or p.startswith("/.well-known/oauth-protected-resource"):
-            return self._well_known_prm()
+        prm_prefix = "/.well-known/oauth-protected-resource"
+        if p.startswith(prm_prefix):
+            # RFC 9728: resource-specific metadata lives at the well-known prefix
+            # followed by the resource's own path, so each endpoint advertises its
+            # own posture (clean vs SSRF) instead of one server-wide document.
+            return self._well_known_prm(p[len(prm_prefix):] or None)
         if p == "/.well-known/oauth-authorization-server":
             return self._well_known_as()
         self._send({"error": "not found"}, 404)
 
-    def _well_known_prm(self):
-        # which AS to advertise depends on whether any oauth=ssrf scenario is in play;
-        # we serve a single PRM. The 'ssrf' variant points the AS at a link-local IP.
-        if os.environ.get("VULNLAB_OAUTH_SSRF") == "1":
-            return self._send({"resource": self._self_url(),
+    def _well_known_prm(self, resource_path=None):
+        scn = SCENARIOS.get(resource_path) if resource_path else None
+        oauth = (scn or {}).get("oauth", "ok")
+        if oauth == "ssrf":
+            # the 'ssrf' variant points the AS at a link-local metadata address
+            # over cleartext, and advertises over-broad scopes
+            return self._send({"resource": self._self_url() + (resource_path or ""),
                                "authorization_servers": ["http://169.254.169.254/latest"],
                                "scopes_supported": ["*", "admin", "read", "write"]})
-        return self._send({"resource": self._self_url(),
+        return self._send({"resource": self._self_url() + (resource_path or ""),
                            "authorization_servers": [self._self_url()],
                            "scopes_supported": ["mcp:read"]})
 
@@ -320,11 +343,11 @@ class Handler(BaseHTTPRequestHandler):
         # auth gate — but tasks/* can be deliberately left open even when auth is on
         needs_auth = scn.get("auth") and not (scn.get("tasks_open") and method and method.startswith("tasks/"))
         if needs_auth and not self.headers.get("Authorization"):
+            prm = '%s/.well-known/oauth-protected-resource%s' % (self._self_url(), path)
             return self._send({"jsonrpc": "2.0", "id": rid,
                                "error": {"code": -32001, "message": "unauthorized"}},
                               401, extra={"WWW-Authenticate":
-                                          'Bearer resource_metadata="%s/.well-known/'
-                                          'oauth-protected-resource"' % self._self_url(),
+                                          'Bearer resource_metadata="%s"' % prm,
                                           **cors})
 
         # modern servers reject initialize; legacy servers reject server/discover

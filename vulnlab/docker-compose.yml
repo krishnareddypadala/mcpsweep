@@ -13,6 +13,6 @@ services:
     environment:
       VULNLAB_HOST: "0.0.0.0"
       VULNLAB_PORT: "9100"
-      # demo toggles (leave unset for the default scenario set):
-      VULNLAB_OAUTH_SSRF: "1"
+      # /mcp/oauth-ssrf is always-on (driven by its scenario). Flip this to
+      # demonstrate a rug-pull on /mcp/rugpull (scan before, set 1, scan after):
       MCPSWEEP_RUGPULL: "0"

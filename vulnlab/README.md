@@ -43,7 +43,7 @@ directly into the stack's compose file so it shares the lab network.
 | `/mcp/dual` | dual-era: answers both `initialize` and `server/discover` |
 | `/mcp/poison` | full-schema poisoning (enum/param), ANSI-escape deception, Unicode TAG-block / zero-width concealment |
 | `/mcp/readonly-lie` | `readOnlyHint: true` on a destructive tool (CVE-2026-46519 class); argument-injection schema (CVE-2026-61459) |
-| `/mcp/oauth-ssrf` | OAuth metadata hygiene — `resource_metadata`/AS at link-local `169.254.169.254` (CVE-2026-51994 class). Needs `VULNLAB_OAUTH_SSRF=1` |
+| `/mcp/oauth-ssrf` | OAuth metadata hygiene — `resource_metadata`/AS at link-local `169.254.169.254` (CVE-2026-51994 class). Always on for this path |
 | `/mcp/rugpull` | rug-pull — tool definition changes when `MCPSWEEP_RUGPULL=1` (CVE-2025-54136 MCPoison). Scan before/after and `diff` |
 | `/mcp/tasks` | unauthenticated `tasks/*` on an otherwise-authenticated server (CVE-2026-52870 / 111767) |
 | `/mcp/secure-oauth`, `/mcp/safe`, `/mcp` | **clean controls** — mcpsweep should rank these low/benign |
