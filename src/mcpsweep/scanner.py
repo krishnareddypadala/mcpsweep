@@ -22,12 +22,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2024-11-05"     # legacy handshake default
+MODERN_PROTOCOL = "2026-07-28"      # stateless era: server/discover, no initialize
+
+#: serverInfo lives here inside a modern server/discover result._meta
+_DISCOVER_SERVERINFO_KEY = "io.modelcontextprotocol/serverInfo"
+_DISCOVER_PROTOVER_KEY = "io.modelcontextprotocol/protocolVersion"
 
 DEFAULT_PORTS = [8090, 8000, 8080, 3000, 5000, 8888, 9000, 9099]
 DEFAULT_PATHS = [
     "/mcp", "/mcp/", "/mcp/api", "/mcp/db", "/mcp/http", "/mcp/v1",
-    "/sse", "/mcp/sse", "/api/mcp", "/message", "/messages",
+    "/sse", "/mcp/sse", "/api/mcp", "/message", "/messages", "/mcp_message",
     "/rpc", "/jsonrpc", "/tools", "/internal/mcp",
 ]
 
@@ -97,6 +102,11 @@ class MCPEndpoint:
     server_name: str = "?"
     server_version: str = "?"
     protocol: str = "?"
+    protocol_era: str = "legacy"         # legacy | modern | dual (2026-07-28 server/discover)
+    supported_versions: list = field(default_factory=list)   # modern server/discover advertises these
+    discover_used: bool = False          # fingerprinted via server/discover rather than initialize
+    cache_ttl_ms: Optional[int] = None   # modern CacheableResult (ttlMs)
+    cache_scope: str = ""                # modern CacheableResult (cacheScope)
     capabilities: list = field(default_factory=list)
     instructions: str = ""
     instructions_poisoned: bool = False
@@ -116,6 +126,7 @@ class MCPEndpoint:
     auth: dict = field(default_factory=dict)           # OAuth/auth-spec detail (0.5.0)
     resource_findings: list = field(default_factory=list)  # [{uri, class, detail}] (0.6.0)
     active_findings: list = field(default_factory=list)     # verified findings from --active (0.8.0)
+    transport_findings: list = field(default_factory=list)  # [{class, detail}] transport probes (1.0.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -230,6 +241,28 @@ def _init_payload():
     }
 
 
+def _discover_payload():
+    """Modern (spec 2026-07-28) stateless fingerprint. Servers MUST implement it."""
+    return {
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+        "params": {"_meta": {_DISCOVER_PROTOVER_KEY: MODERN_PROTOCOL}},
+    }
+
+
+def _modern_headers(method, name=""):
+    """Required MCP request headers on modern Streamable-HTTP POSTs (spec 2026-07-28)."""
+    h = {"Mcp-Method": method}
+    if name:
+        h["Mcp-Name"] = name
+    return h
+
+
+def _merge_headers(base, extra):
+    out = dict(base or {})
+    out.update(extra or {})
+    return out
+
+
 def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
           insecure=False, headers=None, retries=2, on_diag=None):
     """Try one host:port+path. Returns an MCPEndpoint or None.
@@ -239,16 +272,8 @@ def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
     ``status`` is None for connection-level failures.
     """
     url = f"{scheme}://{host}:{port}{path}"
-    try:
-        r = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
-    except Exception as ex:
-        if on_diag:
-            on_diag(url, None, f"connection error: {type(ex).__name__}")
-        return None
-    ep = _endpoint_from_resp(url, host, port, path, scheme, r, bool(headers))
-    if ep is None and on_diag:
-        on_diag(url, r.status, _why_not_mcp(r))
-    return ep
+    return _fingerprint(url, host, port, path, scheme, proxy, timeout,
+                        insecure, headers, retries, on_diag)
 
 
 def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None,
@@ -259,23 +284,64 @@ def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None,
     host = u.hostname or ""
     port = u.port or (443 if scheme == "https" else 80)
     path = u.path or "/"
+    return _fingerprint(full_url, host, port, path, scheme, proxy, timeout,
+                        insecure, headers, retries, on_diag)
+
+
+def _fingerprint(url, host, port, path, scheme, proxy, timeout, insecure,
+                 headers, retries, on_diag):
+    """Fingerprint an endpoint: try the legacy ``initialize`` handshake, then
+    fall back to the modern stateless ``server/discover`` (spec 2026-07-28).
+
+    Modern-only servers reject ``initialize``, so without the fallback they are
+    invisible to the scanner. Dual-era servers answer both; we note the era.
+    """
+    # 1) legacy / dual-era handshake
     try:
-        r = _rpc_retry(full_url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
+        r_init = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
     except Exception as ex:
         if on_diag:
-            on_diag(full_url, None, f"connection error: {type(ex).__name__}")
+            on_diag(url, None, f"connection error: {type(ex).__name__}")
         return None
-    ep = _endpoint_from_resp(full_url, host, port, path, scheme, r, bool(headers))
+    ep = _endpoint_from_init(url, host, port, path, scheme, r_init, bool(headers))
+    if ep is not None:
+        # confirm whether a legacy/dual server ALSO speaks modern discovery
+        if not ep.auth_required:
+            _tag_dual_era(ep, url, proxy, timeout, insecure, headers, retries)
+        return ep
+
+    # 2) modern stateless discovery fallback
+    try:
+        dh = _merge_headers(headers, _modern_headers("server/discover"))
+        r_disc = _rpc_retry(url, _discover_payload(), proxy, timeout, None, insecure, dh, retries)
+    except Exception as ex:
+        if on_diag:
+            on_diag(url, None, f"connection error: {type(ex).__name__}")
+        return None
+    ep = _endpoint_from_discover(url, host, port, path, scheme, r_disc, bool(headers))
     if ep is None and on_diag:
-        on_diag(full_url, r.status, _why_not_mcp(r))
+        # report whichever response was more informative
+        on_diag(url, r_init.status, _why_not_mcp(r_init))
     return ep
 
 
-def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
-    body = r.body
-    if body is None:
-        return None
+def _tag_dual_era(ep, url, proxy, timeout, insecure, headers, retries):
+    """A legacy server that ALSO answers server/discover is dual-era."""
+    try:
+        dh = _merge_headers(headers, _modern_headers("server/discover"))
+        r = _rpc_retry(url, _discover_payload(), proxy, timeout, None, insecure, dh, retries)
+    except Exception:
+        return
+    result = r.body.get("result") if isinstance(r.body, dict) else None
+    if isinstance(result, dict) and ("supportedVersions" in result or "resultType" in result):
+        ep.protocol_era = "dual"
+        ep.supported_versions = result.get("supportedVersions") or ep.supported_versions
+        ep.findings.append("dual-era server: answers both legacy initialize and modern server/discover")
 
+
+def _auth_gate_endpoint(url, host, port, path, scheme, r):
+    """Return an (auth-required) MCPEndpoint if the response is an MCP auth gate."""
+    body = r.body
     if isinstance(body, dict) and body.get("__httperror__") in (401, 403):
         inner = body.get("body")
         looks_mcp = bool(body.get("__www__")) or (
@@ -288,8 +354,16 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
             ep.auth = {"status": "auth-required", "www_authenticate": body.get("__www__", "")}
             ep.findings.append("endpoint requires authentication")
             return ep
-        return None
+    return None
 
+
+def _endpoint_from_init(url, host, port, path, scheme, r, sent_auth):
+    body = r.body
+    if body is None:
+        return None
+    gate = _auth_gate_endpoint(url, host, port, path, scheme, r)
+    if gate is not None:
+        return gate
     if not isinstance(body, dict):
         return None
     result = body.get("result")
@@ -303,7 +377,8 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
         url=url, host=host, port=port, path=path, scheme=scheme,
         transport="sse" if "sse" in path else "streamable-http",
         server_name=si.get("name", "?"), server_version=si.get("version", "?"),
-        protocol=result.get("protocolVersion", "?"), capabilities=caps,
+        protocol=result.get("protocolVersion", "?"), protocol_era="legacy",
+        capabilities=caps,
         instructions=instr, instructions_poisoned=bool(POISON_RE.search(instr)),
         server_header=r.headers.get("server", ""), powered_by=r.headers.get("x-powered-by", ""),
         session_id=r.session, authenticated=sent_auth,
@@ -312,6 +387,45 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
         ep.findings.append("initialize succeeded with the supplied credentials")
     else:
         ep.findings.append("initialize succeeded without credentials (no authentication)")
+    return ep
+
+
+def _endpoint_from_discover(url, host, port, path, scheme, r, sent_auth):
+    body = r.body
+    if body is None:
+        return None
+    gate = _auth_gate_endpoint(url, host, port, path, scheme, r)
+    if gate is not None:
+        return gate
+    if not isinstance(body, dict):
+        return None
+    result = body.get("result")
+    # a modern server/discover result advertises versions/capabilities statelessly
+    if not isinstance(result, dict) or not (
+            "supportedVersions" in result or "resultType" in result or "capabilities" in result):
+        return None
+
+    meta = result.get("_meta") or {}
+    si = meta.get(_DISCOVER_SERVERINFO_KEY) or result.get("serverInfo") or {}
+    versions = result.get("supportedVersions") or []
+    caps = list((result.get("capabilities") or {}).keys())
+    instr = (result.get("instructions") or "").replace("\n", " ").strip()
+    ep = MCPEndpoint(
+        url=url, host=host, port=port, path=path, scheme=scheme,
+        transport="sse" if "sse" in path else "streamable-http",
+        server_name=si.get("name", "?"), server_version=si.get("version", "?"),
+        protocol=(versions[0] if versions else MODERN_PROTOCOL),
+        protocol_era="modern", supported_versions=versions, discover_used=True,
+        cache_ttl_ms=result.get("ttlMs"), cache_scope=result.get("cacheScope", ""),
+        capabilities=caps,
+        instructions=instr, instructions_poisoned=bool(POISON_RE.search(instr)),
+        server_header=r.headers.get("server", ""), powered_by=r.headers.get("x-powered-by", ""),
+        session_id=None, authenticated=sent_auth,
+    )
+    if sent_auth:
+        ep.findings.append("server/discover succeeded with the supplied credentials")
+    else:
+        ep.findings.append("server/discover succeeded without credentials (no authentication)")
     return ep
 
 
@@ -337,10 +451,11 @@ def _notify_initialized(url, sid, proxy, timeout, insecure, headers):
         pass
 
 
-def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2):
+def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2, modern=False):
+    h = _merge_headers(headers, _modern_headers(method)) if modern else headers
     try:
         r = _rpc_retry(url, {"jsonrpc": "2.0", "id": 2, "method": method, "params": {}},
-                       proxy, timeout, sid, insecure, headers, retries)
+                       proxy, timeout, None if modern else sid, insecure, h, retries)
     except Exception:
         return []
     if isinstance(r.body, dict):
@@ -373,20 +488,25 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
                                  proxy, timeout, insecure)
         _score(ep)
         return ep
-    _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
+    modern = ep.protocol_era == "modern"
+    if not modern:
+        _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
 
-    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure, headers)
+    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout,
+                      insecure, headers, modern=modern)
     for raw in raw_tools:
         ep.tools.append(_analyze_tool(raw))
 
     res = pr = templates = []
     if full or deep:
-        res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout, insecure, headers)
+        res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout,
+                    insecure, headers, modern=modern)
         ep.resources = [r.get("uri", r.get("name", "?")) for r in res]
         for r in res:
             if POISON_RE.search(json.dumps(r)):
                 ep.findings.append(f"resource looks POISONED: {r.get('uri', r.get('name','?'))}")
-        pr = _list(ep.url, "prompts/list", "prompts", ep.session_id, proxy, timeout, insecure, headers)
+        pr = _list(ep.url, "prompts/list", "prompts", ep.session_id, proxy, timeout,
+                   insecure, headers, modern=modern)
         ep.prompts = [p.get("name", "?") for p in pr]
         for p in pr:
             if POISON_RE.search(json.dumps(p)):
@@ -394,7 +514,7 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
 
     if deep:
         templates = _list(ep.url, "resources/templates/list", "resourceTemplates",
-                          ep.session_id, proxy, timeout, insecure, headers)
+                          ep.session_id, proxy, timeout, insecure, headers, modern=modern)
         from . import deep as _deep
         _deep.run(ep, raw_tools, res, templates, pr, read_resources,
                   proxy, timeout, insecure, headers, deep_max_bytes, deep_max_resources)
@@ -405,6 +525,10 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
 
 def _score(ep):
     score = 0
+    if ep.protocol_era in ("modern", "dual"):
+        ep.findings.append(
+            f"protocol era: {ep.protocol_era} (server/discover, spec 2026-07-28)"
+            + (f"; supports {', '.join(ep.supported_versions)}" if ep.supported_versions else ""))
     if not ep.auth_required and not ep.authenticated and ep.transport != "stdio":
         score += 20
     st = (ep.auth or {}).get("status")
@@ -513,7 +637,7 @@ def dedupe(found):
             passthru.append(ep)
             continue
         sig = (ep.scheme, ep.host, ep.port, ep.server_name, ep.server_version,
-               tuple(sorted(t.name for t in ep.tools)))
+               ep.protocol_era, tuple(sorted(t.name for t in ep.tools)))
         by_sig.setdefault(sig, []).append(ep)
     return passthru + [merge(g) for g in by_sig.values()]
 
