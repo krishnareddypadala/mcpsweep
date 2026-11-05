@@ -18,10 +18,20 @@ docker compose -f vulnlab/docker-compose.yml up --build
 
 ## Run it on top of phpvulnbank
 
-Copy the `vulnlab` service from [`docker-compose.yml`](docker-compose.yml) into
-the phpvulnbank stack's compose file (so it shares the lab network), then
-`docker compose up -d vulnlab`. It will answer on `:9100` alongside the existing
-`:8090` MCP endpoints.
+Deployed as a co-located compose project beside the phpvulnbank laravel stack
+(its own `docker compose` project at `/opt/phpvulnbank/vulnlab/`, with
+`restart: unless-stopped` so it survives host reboots). It answers on `:9100`
+alongside the existing `:8090` MCP endpoints and is fully reversible with
+`docker compose down`. On the lab network it is live at
+`http://10.10.0.31:9100`.
+
+```bash
+cd /opt/phpvulnbank/vulnlab && docker compose up -d --build   # (re)deploy
+cd /opt/phpvulnbank/vulnlab && docker compose down            # remove
+```
+
+Alternatively, copy the `vulnlab` service from [`docker-compose.yml`](docker-compose.yml)
+directly into the stack's compose file so it shares the lab network.
 
 ## Scenario map (path → what it models)
 
