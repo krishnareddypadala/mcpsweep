@@ -5,11 +5,13 @@ port and asserts that mcpsweep detects each modelled issue (and that clean
 control endpoints stay clean).
 """
 import contextlib
+import json
 import threading
 
 import pytest
 
 from mcpsweep import scan
+from mcpsweep import diff as _diff
 
 vulnlab = pytest.importorskip("vulnlab")
 
@@ -143,3 +145,46 @@ def test_oauth_metadata_ssrf_flagged_and_not_followed(monkeypatch):
         hy = " ".join((ep.auth or {}).get("hygiene", []))
         assert "169.254.169.254" in hy and "link-local" in hy
         assert any(f.startswith("oauth-hygiene:") for f in ep.findings)
+
+
+# --- Tier 2: metadata analysis ---------------------------------------------
+
+def test_hidden_characters_detected():
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/poison")
+        kinds = {k for t in ep.tools for k in t.hidden_chars}
+        assert "ansi-escape" in kinds               # list-files
+        assert "unicode-tag-block" in kinds          # fetch-url (TAG block)
+        assert any(f.startswith("hidden-characters:") for f in ep.findings)
+
+
+def test_full_schema_poisoning_not_just_description():
+    """pick-region has a clean top description but a payload in its enum/param desc."""
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/poison")
+        pr = next(t for t in ep.tools if t.name == "pick-region")
+        assert "deployment region" in pr.description.lower()   # clean top-level
+        assert pr.poisoned is True                              # caught in the schema
+
+
+def test_rug_pull_detected_via_diff(tmp_path, monkeypatch):
+    def snapshot(name):
+        with running_vulnlab() as port:
+            eps = scan(["127.0.0.1"], ports=[port], paths=["/mcp/rugpull"])
+        p = tmp_path / name
+        p.write_text(json.dumps({"endpoints": [e.to_dict() for e in eps]}), encoding="utf-8")
+        # normalise the ephemeral port in the URL so the two snapshots line up
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for e in data["endpoints"]:
+            e["url"] = "http://host/mcp/rugpull"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        return str(p)
+
+    before = snapshot("before.json")
+    monkeypatch.setenv("MCPSWEEP_RUGPULL", "1")
+    after = snapshot("after.json")
+
+    d = _diff.diff_reports(before, after)
+    rug = [t for c in d["changed"] for t in c.get("rug_pulled", [])]
+    assert "weather" in rug
+    assert _diff.has_drift(d)

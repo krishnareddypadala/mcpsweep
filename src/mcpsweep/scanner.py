@@ -49,11 +49,30 @@ POISON_RE = re.compile(
     re.I,
 )
 
+#: hidden / deceptive characters smuggled into metadata (ANSI escapes, zero-width,
+#: bidi overrides, Unicode TAG block U+E0000-E007F). Trail of Bits + arXiv 2607.05744.
+HIDDEN_PATTERNS = [
+    ("ansi-escape", re.compile(r"\x1b\[")),
+    ("zero-width", re.compile("[​-‏⁠﻿]")),
+    ("bidi-override", re.compile("[‪-‮⁦-⁩]")),
+    ("unicode-tag-block", re.compile("[\U000e0000-\U000e007f]")),
+]
+
+
+def hidden_char_kinds(text):
+    """Return the kinds of concealed characters present in ``text`` (empty if none)."""
+    if not text:
+        return []
+    return [name for name, rx in HIDDEN_PATTERNS if rx.search(text)]
+
+
 #: keyword -> risk tag; matched against tool name and description
 RISK_KEYWORDS = {
     "sql": "sql", "query": "query", "database": "db",
     "shell": "rce", "command": "rce", "exec": "rce", "eval": "rce", "bash": "rce",
     "run": "exec", "spawn": "rce", "subprocess": "rce",
+    "pickle": "rce", "deserialize": "rce", "unpickle": "rce", "unmarshal": "rce",
+    "marshal": "rce", "yaml.load": "rce", "compile": "rce",
     "transfer": "money", "payment": "money", "wire": "money", "withdraw": "money",
     "delete": "destructive", "drop": "destructive", "remove": "destructive",
     "truncate": "destructive", "write": "write", "update": "write",
@@ -85,9 +104,11 @@ class ToolInfo:
     name: str
     description: str = ""
     tags: list = field(default_factory=list)
-    poisoned: bool = False
+    poisoned: bool = False                             # full-schema poisoning (1.0.0: whole tool, not just description)
     freeform_params: list = field(default_factory=list)
     injection_surface: bool = False
+    hidden_chars: list = field(default_factory=list)   # ANSI/zero-width/bidi/tag-block kinds (1.0.0)
+    signature: str = ""                                # hash of name+description+schema, for rug-pull diff (1.0.0)
     param_vulns: list = field(default_factory=list)    # [{param, class, why}] (0.6.0 --deep)
 
 
@@ -463,6 +484,33 @@ def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2, m
     return []
 
 
+def _tool_signature(t):
+    """Stable hash of a tool's security-relevant surface (name + description +
+    input schema). Used to detect rug-pulls (silent post-approval mutation)."""
+    import hashlib
+    blob = json.dumps({"name": t.get("name", ""),
+                       "description": t.get("description", ""),
+                       "inputSchema": t.get("inputSchema", {}),
+                       "annotations": t.get("annotations", {})},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _all_strings(obj):
+    """Yield every string value (and dict key) anywhere inside a JSON-like object,
+    so detectors see param names, descriptions, enums, annotations and nested
+    schemas - not only the top-level description."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k
+            yield from _all_strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _all_strings(v)
+
+
 def _analyze_tool(t):
     name = t.get("name", "")
     desc = t.get("description", "") or ""
@@ -473,9 +521,16 @@ def _analyze_tool(t):
                       if isinstance(spec, dict) and spec.get("type") == "string"
                       and not spec.get("enum"))
     injection = bool(freeform) and bool(set(tags) & INJECTABLE_TAGS)
+    # full-schema poisoning: scan the WHOLE tool's raw string values (param names,
+    # descriptions, enums, annotations, nested schema) - NOT a json.dumps(), which
+    # would escape control chars and hide ANSI payloads.
+    full_text = "\n".join(_all_strings(t))
+    poisoned = bool(POISON_RE.search(full_text))
+    hidden = hidden_char_kinds(full_text)
     return ToolInfo(name=name, description=desc, tags=tags,
-                    poisoned=bool(POISON_RE.search(desc)),
-                    freeform_params=freeform, injection_surface=injection)
+                    poisoned=poisoned,
+                    freeform_params=freeform, injection_surface=injection,
+                    hidden_chars=hidden, signature=_tool_signature(t))
 
 
 def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
@@ -550,6 +605,16 @@ def _score(ep):
     if ep.instructions_poisoned:
         score += 20
         ep.findings.append("server instructions contain injected content")
+    ih = hidden_char_kinds(ep.instructions)
+    if ih:
+        score += 12
+        ep.findings.append("hidden-characters: server instructions contain "
+                           + ", ".join(ih) + " (concealed content)")
+    for t in ep.tools:
+        if t.hidden_chars:
+            score += 12
+            ep.findings.append(f"hidden-characters: tool '{t.name}' metadata contains "
+                               + ", ".join(t.hidden_chars) + " (concealed instructions)")
     poisoned = [t for t in ep.tools if t.poisoned]
     injectable = [t for t in ep.tools if t.injection_surface]
     for t in ep.tools:

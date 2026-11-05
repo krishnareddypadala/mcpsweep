@@ -42,6 +42,10 @@ _RULES = {
     "lan-exposure": ("Unauthenticated MCP server on a non-loopback address (NeighborJack)", "error"),
     "sibling-endpoint-auth-gap": ("A sibling endpoint enforces auth but this one does not", "error"),
     "oauth-hygiene": ("OAuth metadata hygiene issue (SSRF/scheme/audience/scope)", "warning"),
+    "hidden-characters": ("Concealed characters in metadata (ANSI/zero-width/bidi/tag-block)", "error"),
+    "rug-pull": ("Tool definition changed after baseline (rug-pull / entity changed)", "error"),
+    "config-lint": ("Dangerous entry in a local MCP client config", "error"),
+    "known-vulnerable": ("Server matches a known-vulnerable version (offline advisory DB)", "error"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -72,7 +76,8 @@ def _rule_for(finding: str):
                 "annotation-mismatch", "confused-deputy",
                 "dns-rebinding", "cors-reflect-credentials", "cors-wildcard",
                 "cors-reflect", "lan-exposure", "sibling-endpoint-auth-gap",
-                "oauth-hygiene"):
+                "oauth-hygiene", "hidden-characters", "rug-pull", "config-lint",
+                "known-vulnerable"):
         if f.startswith(pfx):
             return pfx
     if f.startswith("prompt-injection-surface"):
