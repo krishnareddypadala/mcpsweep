@@ -46,6 +46,10 @@ _RULES = {
     "rug-pull": ("Tool definition changed after baseline (rug-pull / entity changed)", "error"),
     "config-lint": ("Dangerous entry in a local MCP client config", "error"),
     "known-vulnerable": ("Server matches a known-vulnerable version (offline advisory DB)", "error"),
+    "tool-shadowing": ("A tool name is offered by more than one server (shadowing)", "warning"),
+    "weak-session": ("Weak or predictable session identifier", "warning"),
+    "plaintext-http-auth": ("Credentials accepted over cleartext http:// (non-loopback)", "error"),
+    "unauthenticated-tasks": ("tasks/* reachable without auth on an authenticated server", "error"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -77,7 +81,8 @@ def _rule_for(finding: str):
                 "dns-rebinding", "cors-reflect-credentials", "cors-wildcard",
                 "cors-reflect", "lan-exposure", "sibling-endpoint-auth-gap",
                 "oauth-hygiene", "hidden-characters", "rug-pull", "config-lint",
-                "known-vulnerable"):
+                "known-vulnerable", "tool-shadowing", "weak-session", "plaintext-http-auth",
+                "unauthenticated-tasks"):
         if f.startswith(pfx):
             return pfx
     if f.startswith("prompt-injection-surface"):

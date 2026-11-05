@@ -114,4 +114,23 @@ def probe_transport(ep, proxy=None, timeout=8.0, insecure=False, headers=None):
             f"unauthenticated MCP server answering on a non-loopback address ({ep.host}) "
             f"- reachable across the LAN (NeighborJack)")
 
+    # 4) unauthenticated tasks/* on an otherwise-authenticated server ---------
+    #    (CVE-2026-52870 missing authz on tasks/*, CVE-2026-111767 task IDOR)
+    if ep.auth_required:
+        noauth = {k: v for k, v in (headers or {}).items() if k.lower() != "authorization"}
+        th = _merge_headers(noauth, {"Content-Type": "application/json",
+                                     "Accept": "application/json, text/event-stream"})
+        if ep.protocol_era == "modern":
+            th = _merge_headers(th, _modern_headers("tasks/list"))
+        status, h, raw = _raw(ep.url, "POST", proxy, timeout, insecure, th,
+                              data=_json.dumps({"jsonrpc": "2.0", "id": 7,
+                                                "method": "tasks/list", "params": {}}).encode())
+        if status is not None and status < 400:
+            body = _parse_body(raw, h.get("content-type", ""))
+            tasks = isinstance(body, dict) and (body.get("result") or {}).get("tasks")
+            if tasks:
+                add("unauthenticated-tasks",
+                    "tasks/* is reachable WITHOUT credentials even though the server requires "
+                    "auth elsewhere (task store not access-controlled; CVE-2026-52870/111767 class)")
+
     return ep

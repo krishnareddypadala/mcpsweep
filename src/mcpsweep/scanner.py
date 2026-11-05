@@ -641,9 +641,21 @@ def _score(ep):
     hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
     if hint:
         ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")
+    # weak / predictable session id (legacy transport)
+    sid = ep.session_id or ""
+    if sid and _weak_session(sid):
+        score += 8
+        ep.findings.append(f"weak-session: session id '{sid}' is short or predictable "
+                           f"(guessable; not cryptographically random)")
+    # credentials accepted over cleartext http on a routable host
+    from .transport import _is_loopback
+    if ep.scheme == "http" and not _is_loopback(ep.host) and (ep.auth_required or ep.authenticated):
+        score += 10
+        ep.findings.append("plaintext-http-auth: authentication used over cleartext http:// on a "
+                           "non-loopback host (credentials exposed in transit)")
     # transport-probe (1.0.0) contributions
     _tf_weight = {"dns-rebinding": 18, "cors-reflect-credentials": 18, "lan-exposure": 20,
-                  "cors-wildcard": 10, "cors-reflect": 8}
+                  "cors-wildcard": 10, "cors-reflect": 8, "unauthenticated-tasks": 20}
     for tf in ep.transport_findings:
         score += _tf_weight.get(tf.get("class"), 5)
     # known-vulnerable version matches (1.0.0, offline DB)
@@ -741,6 +753,39 @@ def parse_ports(spec):
     return sorted(p for p in ports if 0 < p < 65536)
 
 
+def _weak_session(sid):
+    """Heuristic: a session id that is short, sequential, or low-entropy."""
+    import re as _re
+    if len(sid) < 16:
+        return True
+    if _re.fullmatch(r"(sess[-_]?)?\d+", sid, _re.I):   # sess-1, 42, ...
+        return True
+    if len(set(sid)) <= 4:                               # very low character diversity
+        return True
+    return False
+
+
+def _flag_tool_shadowing(found):
+    """A tool name offered by more than one distinct server can be used by a
+    malicious server to shadow/override a trusted one (Invariant; OWASP MCP03)."""
+    from collections import defaultdict
+    owners = defaultdict(set)
+    for ep in found:
+        for t in ep.tools:
+            owners[t.name].add(ep.url)
+    for ep in found:
+        for t in ep.tools:
+            others = owners[t.name] - {ep.url}
+            if others:
+                detail = (f"tool '{t.name}' is also offered by {len(others)} other server(s) "
+                          f"({', '.join(sorted(others))}) - shadowing/override risk")
+                ep.findings.append("tool-shadowing: " + detail)
+                ep.transport_findings.append({"class": "tool-shadowing", "detail": detail})
+                ep.risk_score += 6
+                ep.risk_level = ("critical" if ep.risk_score >= 60 else "high" if ep.risk_score >= 35
+                                 else "medium" if ep.risk_score >= 15 else "low")
+
+
 def _flag_sibling_auth_gaps(found):
     """Flag endpoints on a host:port where a sibling path enforces auth but this one
     does not - the CVE-2026-33032 pattern (/mcp protected, /mcp_message open)."""
@@ -811,5 +856,6 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
                 on_found(ep)
     found = dedupe(found)
     _flag_sibling_auth_gaps(found)
+    _flag_tool_shadowing(found)
     found.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
     return found

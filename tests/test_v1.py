@@ -252,3 +252,47 @@ def test_config_lint_cli(tmp_path, capsys):
     rc = main(["lint-config", str(p), "--fail-on-findings", "--no-color"])
     assert rc == 4
     assert "evil" in capsys.readouterr().out
+
+
+# --- Tier 2: shadowing, weak session, plaintext-http -----------------------
+
+def test_tool_shadowing_across_servers():
+    with running_vulnlab() as port:
+        eps = scan(["127.0.0.1"], ports=[port], paths=["/mcp/noauth", "/mcp/modern"])
+        shadowed = [e for e in eps
+                    if any(tf["class"] == "tool-shadowing" for tf in e.transport_findings)]
+        assert shadowed
+        assert any("run-shell-command" in tf["detail"]
+                   for e in shadowed for tf in e.transport_findings
+                   if tf["class"] == "tool-shadowing")
+
+
+def test_weak_session_flagged():
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/noauth")   # mints predictable 'sess-N'
+        assert any(f.startswith("weak-session:") for f in ep.findings)
+
+
+def test_weak_session_helper():
+    from mcpsweep.scanner import _weak_session
+    assert _weak_session("sess-1") and _weak_session("42") and _weak_session("aaaaaaaaaaaaaaaa")
+    assert not _weak_session("a5ca6dd480e945948ee9d60687f5a6a0")
+
+
+def test_unauthenticated_tasks_probe():
+    with running_vulnlab() as port:
+        ep = _scan_path(port, "/mcp/tasks")   # auth required, but tasks/* left open
+        assert any(tf["class"] == "unauthenticated-tasks" for tf in ep.transport_findings)
+
+
+def test_plaintext_http_auth_scored():
+    from mcpsweep.scanner import MCPEndpoint, _score
+    ep = MCPEndpoint(url="http://10.0.0.5:8090/mcp", host="10.0.0.5", port=8090,
+                     path="/mcp", scheme="http", auth_required=True, server_name="(auth required)")
+    _score(ep)
+    assert any(f.startswith("plaintext-http-auth:") for f in ep.findings)
+    # loopback must NOT trigger it
+    ep2 = MCPEndpoint(url="http://127.0.0.1:8090/mcp", host="127.0.0.1", port=8090,
+                      path="/mcp", scheme="http", auth_required=True, server_name="(auth required)")
+    _score(ep2)
+    assert not any(f.startswith("plaintext-http-auth:") for f in ep2.findings)
