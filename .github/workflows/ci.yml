@@ -13,10 +13,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
         include:
+          # 3.8/3.9 are not provided by setup-python on ubuntu-latest (26.04);
+          # run them on 22.04 where the toolchain is available.
           - os: ubuntu-22.04
             python-version: "3.8"
+          - os: ubuntu-22.04
+            python-version: "3.9"
           - os: windows-latest
             python-version: "3.12"
     steps:
