@@ -1,0 +1,23 @@
+{
+  "_comment": "Offline MCP advisory seed for mcpsweep. Matches serverInfo.name/version against known-vulnerable ranges. CVSS/fix per NVD (see docs/MCP-SECURITY-RESEARCH.md). Extend via PRs; never queried over the network.",
+  "updated": "2026-11-05",
+  "advisories": [
+    {"id": "CVE-2025-6514", "name": "mcp-remote", "affected": ">=0.0.5,<0.1.16", "cvss": 9.6, "class": "command-injection", "detail": "OS command injection via a malicious authorization_endpoint"},
+    {"id": "CVE-2026-51994", "name": "mcp-remote", "affected": ">=0.1.32,<0.1.39", "cvss": 9.1, "class": "ssrf", "detail": "SSRF via the resource_metadata URL in WWW-Authenticate"},
+    {"id": "CVE-2025-49596", "name": "mcp-inspector", "aliases": ["inspector", "@modelcontextprotocol/inspector"], "affected": "<0.14.1", "cvss": 9.4, "class": "missing-auth-rce", "detail": "No auth between client and proxy -> RCE"},
+    {"id": "CVE-2025-58444", "name": "mcp-inspector", "aliases": ["inspector"], "affected": "<0.16.6", "cvss": 8.6, "class": "xss-rce", "detail": "XSS via a malicious server redirect -> RCE"},
+    {"id": "CVE-2025-53107", "name": "git-mcp-server", "aliases": ["@cyanheads/git-mcp-server"], "affected": "<2.1.5", "cvss": 7.5, "class": "command-injection", "detail": "Command injection via child_process.exec"},
+    {"id": "CVE-2025-53967", "name": "framelink-figma-mcp", "aliases": ["figma-developer-mcp", "figma-mcp"], "affected": "<0.6.3", "cvss": 8.0, "class": "command-injection", "detail": "Unauthenticated OS command injection via the curl fallback"},
+    {"id": "CVE-2025-53109", "name": "server-filesystem", "aliases": ["filesystem", "mcp-server-filesystem"], "affected": "<0.6.4", "cvss": 7.3, "class": "path-traversal", "detail": "Symlink escape outside the allowed root"},
+    {"id": "CVE-2025-53110", "name": "server-filesystem", "aliases": ["filesystem", "mcp-server-filesystem"], "affected": "<0.6.4", "cvss": 7.3, "class": "path-traversal", "detail": "Path-prefix containment bypass"},
+    {"id": "CVE-2025-52573", "name": "ios-simulator-mcp", "affected": "<1.3.3", "cvss": 6.0, "class": "command-injection", "detail": "Command injection"},
+    {"id": "CVE-2025-54073", "name": "mcp-package-docs", "affected": "<0.1.29", "cvss": 7.5, "class": "command-injection", "detail": "Tool parameters concatenated into child_process.exec"},
+    {"id": "CVE-2025-53355", "name": "mcp-server-kubernetes", "affected": "<1.2.0", "cvss": 7.5, "class": "command-injection", "detail": "Command injection in the kubectl tool"},
+    {"id": "CVE-2026-46519", "name": "mcp-server-kubernetes", "affected": "<3.6.0", "cvss": 8.8, "class": "authz-bypass", "detail": "ALLOW_ONLY_READONLY_TOOLS does not restrict properly"},
+    {"id": "CVE-2026-61459", "name": "mcp-server-kubernetes", "affected": "<3.9.0", "cvss": 9.3, "class": "argument-injection", "detail": "Argument injection with leading-dash parameters"},
+    {"id": "CVE-2025-15063", "name": "ollama-mcp-server", "aliases": ["ollama-mcp"], "affected": "<9999", "cvss": 9.8, "class": "command-injection", "detail": "execAsync command injection RCE"},
+    {"id": "CVE-2026-33032", "name": "nginx-ui", "affected": "<=2.3.5", "cvss": 9.8, "class": "missing-auth", "detail": "/mcp_message skips the auth that /mcp enforces (MCPwn)"},
+    {"id": "CVE-2026-49257", "name": "mcp-pinot", "affected": "<=3.0.1", "cvss": 10.0, "class": "missing-auth", "detail": "HTTP server defaults to 0.0.0.0:8080 with no auth"},
+    {"id": "CVE-2025-6515", "name": "oatpp-mcp", "affected": "<9999", "cvss": 6.8, "class": "weak-session", "detail": "Session ID is an instance pointer (not unique/secure)"}
+  ]
+}

@@ -5,14 +5,22 @@
 [![Python](https://img.shields.io/pypi/pyversions/mcpsweep.svg)](https://pypi.org/project/mcpsweep/)
 
 A small, dependency-free **discovery and fingerprinting scanner for MCP-over-HTTP
-servers**. It finds Model Context Protocol endpoints on a host or network,
-performs the JSON-RPC `initialize` handshake to fingerprint each one, enumerates
-its **tools / resources / prompts**, and flags risky or **poisoned** tools.
+servers** — think *nmap for MCP*. It finds Model Context Protocol endpoints on a
+host or network, fingerprints each one (both the legacy `initialize` handshake
+**and** the modern stateless `server/discover` of spec **2026-07-28**), enumerates
+its **tools / resources / prompts**, and flags risky/**poisoned** tools, transport
+weaknesses, and known-vulnerable versions.
 
-It is strictly **read-only** — it performs the handshake and `*/list` calls only,
-and never invokes a tool (`tools/call`).
+It is strictly **read-only** by default — handshake and `*/list` calls only, never
+`tools/call` (unless you opt into `--active`). And it is **local-only**: mcpsweep
+has **zero runtime dependencies**, uses **no LLM and no cloud service**, and never
+sends your tool names, descriptions, or configs anywhere. The only host it talks
+to is the one you point it at.
 
 > **Authorized use only.** Scan hosts you own or are explicitly permitted to test.
+
+📊 **[Detection coverage → OWASP MCP Top 10 + CVEs](docs/CVE-COVERAGE.md)** ·
+🧪 **[vulnlab: a vulnerable MCP server to test against](vulnlab/)**
 
 ## Why
 
@@ -84,6 +92,13 @@ mcpsweep 10.10.0.31 --ports 8090 --active --i-have-authorization    # verify BOL
 
 # drift detection between two JSON scans (continuous posture monitoring)
 mcpsweep diff yesterday.json today.json --fail-on-drift
+
+# transport-security probes run by default (DNS-rebinding, CORS, LAN exposure,
+# sibling-endpoint auth gaps); turn them off with:
+mcpsweep 10.10.0.31 --ports 8090 --no-transport-probe
+
+# statically lint a local MCP client config for dangerous stdio servers + secrets
+mcpsweep lint-config ~/.cursor/mcp.json ~/Library/Application\ Support/Claude/claude_desktop_config.json
 ```
 
 ### Key options
@@ -102,6 +117,7 @@ mcpsweep diff yesterday.json today.json --fail-on-drift
 | `--proxy` | send all traffic via a proxy (e.g. Burp on `127.0.0.1:8080`) |
 | `--insecure`/`-k` | skip TLS verification |
 | `--full` | also enumerate `resources/list` and `prompts/list` |
+| `--no-transport-probe` | skip the read-only transport checks (DNS-rebinding, CORS, LAN exposure) |
 | `--auth-probe` | for auth-gated servers, follow OAuth metadata (RFC 9728/8414) and classify (implied by `--full`) |
 | `--deep` | classify parameter sinks (cmd/SQLi/path/SSRF), resource/prompt & annotation risks |
 | `--read-resources` | also fetch resource contents and scan for secrets/injection (implies `--deep`) |
@@ -139,8 +155,27 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
 
 ## What it detects
 
-- **Live MCP endpoints** across many candidate paths/ports, via the `initialize`
-  handshake (Streamable-HTTP and SSE-framed responses).
+- **Live MCP endpoints** across many candidate paths/ports, via the legacy
+  `initialize` handshake **and** the modern stateless `server/discover`
+  (spec 2026-07-28) — so modern-only servers aren't missed (Streamable-HTTP and
+  SSE-framed responses). Dual-era servers are tagged.
+- **Transport weaknesses** (read-only live probes): **DNS-rebinding** (foreign
+  `Host`/`Origin` accepted), **CORS** wildcard/reflected-with-credentials,
+  **LAN exposure** (unauthenticated on a non-loopback address — NeighborJack),
+  and **sibling-endpoint auth gaps** (one path protected, a sibling open).
+- **Known-vulnerable versions**: matches `serverInfo` against a **bundled,
+  offline** advisory DB (no OSV/NVD calls).
+- **Hidden/deceptive metadata**: ANSI escapes, zero-width, bidi overrides, and
+  Unicode **TAG-block** concealment in tool metadata and server instructions.
+- **Full-schema tool poisoning**: injected instructions anywhere in the tool
+  (param names, descriptions, enums, annotations) — not just the description.
+- **Rug-pulls**: `mcpsweep diff` flags a tool whose signature changed since the
+  baseline (MCPoison class), plus tool **shadowing** across servers.
+- **OAuth metadata hygiene**: SSRF targets, bad schemes, shell metacharacters,
+  missing issuer, over-broad scopes — and it refuses to fetch a link-local /
+  cloud-metadata / private target itself.
+- **Dangerous local configs** (`lint-config`): `sh -c`, `curl|sh`, unpinned
+  `npx -y`/`uvx`, inline-eval interpreters, plaintext secrets.
 - **Server fingerprint**: name, version, protocol, capabilities, instructions.
 - **No authentication**: `initialize` that succeeds with no credentials.
 - **Auth-gated endpoints**: `401/403` with an MCP/`WWW-Authenticate` signature; with

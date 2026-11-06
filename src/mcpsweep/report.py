@@ -35,6 +35,22 @@ _RULES = {
     "policy-max-risk": ("Endpoint exceeds the policy max risk", "warning"),
     "active-bola": ("Verified BOLA/IDOR (tool was called)", "error"),
     "active-secret-exposure": ("Verified secret/PII exposure (tool was called)", "error"),
+    "dns-rebinding": ("No Origin/Host validation (DNS-rebinding / browser pivot)", "error"),
+    "cors-wildcard": ("Access-Control-Allow-Origin: * on an MCP endpoint", "warning"),
+    "cors-reflect": ("Reflected Origin in Access-Control-Allow-Origin", "warning"),
+    "cors-reflect-credentials": ("Reflected Origin with credentials (cross-site tool execution)", "error"),
+    "lan-exposure": ("Unauthenticated MCP server on a non-loopback address (NeighborJack)", "error"),
+    "sibling-endpoint-auth-gap": ("A sibling endpoint enforces auth but this one does not", "error"),
+    "oauth-hygiene": ("OAuth metadata hygiene issue (SSRF/scheme/audience/scope)", "warning"),
+    "hidden-characters": ("Concealed characters in metadata (ANSI/zero-width/bidi/tag-block)", "error"),
+    "rug-pull": ("Tool definition changed after baseline (rug-pull / entity changed)", "error"),
+    "config-lint": ("Dangerous entry in a local MCP client config", "error"),
+    "known-vulnerable": ("Server matches a known-vulnerable version (offline advisory DB)", "error"),
+    "tool-shadowing": ("A tool name is offered by more than one server (shadowing)", "warning"),
+    "weak-session": ("Weak or predictable session identifier", "warning"),
+    "plaintext-http-auth": ("Credentials accepted over cleartext http:// (non-loopback)", "error"),
+    "unauthenticated-tasks": ("tasks/* reachable without auth on an authenticated server", "error"),
+    "toxic-flow": ("Sensitive-data access and outbound network on the same server", "warning"),
     "discovery": ("MCP endpoint discovered", "note"),
 }
 
@@ -62,7 +78,12 @@ def _rule_for(finding: str):
     if "confirmed secret" in f:
         return "active-secret-exposure"
     for pfx in ("command-injection", "sqli", "path-traversal", "ssrf",
-                "annotation-mismatch", "confused-deputy"):
+                "annotation-mismatch", "confused-deputy",
+                "dns-rebinding", "cors-reflect-credentials", "cors-wildcard",
+                "cors-reflect", "lan-exposure", "sibling-endpoint-auth-gap",
+                "oauth-hygiene", "hidden-characters", "rug-pull", "config-lint",
+                "known-vulnerable", "tool-shadowing", "weak-session", "plaintext-http-auth",
+                "unauthenticated-tasks", "toxic-flow"):
         if f.startswith(pfx):
             return pfx
     if f.startswith("prompt-injection-surface"):

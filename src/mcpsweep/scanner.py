@@ -22,12 +22,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2024-11-05"     # legacy handshake default
+MODERN_PROTOCOL = "2026-07-28"      # stateless era: server/discover, no initialize
+
+#: serverInfo lives here inside a modern server/discover result._meta
+_DISCOVER_SERVERINFO_KEY = "io.modelcontextprotocol/serverInfo"
+_DISCOVER_PROTOVER_KEY = "io.modelcontextprotocol/protocolVersion"
 
 DEFAULT_PORTS = [8090, 8000, 8080, 3000, 5000, 8888, 9000, 9099]
 DEFAULT_PATHS = [
     "/mcp", "/mcp/", "/mcp/api", "/mcp/db", "/mcp/http", "/mcp/v1",
-    "/sse", "/mcp/sse", "/api/mcp", "/message", "/messages",
+    "/sse", "/mcp/sse", "/api/mcp", "/message", "/messages", "/mcp_message",
     "/rpc", "/jsonrpc", "/tools", "/internal/mcp",
 ]
 
@@ -44,11 +49,30 @@ POISON_RE = re.compile(
     re.I,
 )
 
+#: hidden / deceptive characters smuggled into metadata (ANSI escapes, zero-width,
+#: bidi overrides, Unicode TAG block U+E0000-E007F). Trail of Bits + arXiv 2607.05744.
+HIDDEN_PATTERNS = [
+    ("ansi-escape", re.compile(r"\x1b\[")),
+    ("zero-width", re.compile("[​-‏⁠﻿]")),
+    ("bidi-override", re.compile("[‪-‮⁦-⁩]")),
+    ("unicode-tag-block", re.compile("[\U000e0000-\U000e007f]")),
+]
+
+
+def hidden_char_kinds(text):
+    """Return the kinds of concealed characters present in ``text`` (empty if none)."""
+    if not text:
+        return []
+    return [name for name, rx in HIDDEN_PATTERNS if rx.search(text)]
+
+
 #: keyword -> risk tag; matched against tool name and description
 RISK_KEYWORDS = {
     "sql": "sql", "query": "query", "database": "db",
     "shell": "rce", "command": "rce", "exec": "rce", "eval": "rce", "bash": "rce",
     "run": "exec", "spawn": "rce", "subprocess": "rce",
+    "pickle": "rce", "deserialize": "rce", "unpickle": "rce", "unmarshal": "rce",
+    "marshal": "rce", "yaml.load": "rce", "compile": "rce",
     "transfer": "money", "payment": "money", "wire": "money", "withdraw": "money",
     "delete": "destructive", "drop": "destructive", "remove": "destructive",
     "truncate": "destructive", "write": "write", "update": "write",
@@ -80,9 +104,11 @@ class ToolInfo:
     name: str
     description: str = ""
     tags: list = field(default_factory=list)
-    poisoned: bool = False
+    poisoned: bool = False                             # full-schema poisoning (1.0.0: whole tool, not just description)
     freeform_params: list = field(default_factory=list)
     injection_surface: bool = False
+    hidden_chars: list = field(default_factory=list)   # ANSI/zero-width/bidi/tag-block kinds (1.0.0)
+    signature: str = ""                                # hash of name+description+schema, for rug-pull diff (1.0.0)
     param_vulns: list = field(default_factory=list)    # [{param, class, why}] (0.6.0 --deep)
 
 
@@ -97,6 +123,11 @@ class MCPEndpoint:
     server_name: str = "?"
     server_version: str = "?"
     protocol: str = "?"
+    protocol_era: str = "legacy"         # legacy | modern | dual (2026-07-28 server/discover)
+    supported_versions: list = field(default_factory=list)   # modern server/discover advertises these
+    discover_used: bool = False          # fingerprinted via server/discover rather than initialize
+    cache_ttl_ms: Optional[int] = None   # modern CacheableResult (ttlMs)
+    cache_scope: str = ""                # modern CacheableResult (cacheScope)
     capabilities: list = field(default_factory=list)
     instructions: str = ""
     instructions_poisoned: bool = False
@@ -116,6 +147,8 @@ class MCPEndpoint:
     auth: dict = field(default_factory=dict)           # OAuth/auth-spec detail (0.5.0)
     resource_findings: list = field(default_factory=list)  # [{uri, class, detail}] (0.6.0)
     active_findings: list = field(default_factory=list)     # verified findings from --active (0.8.0)
+    transport_findings: list = field(default_factory=list)  # [{class, detail}] transport probes (1.0.0)
+    known_vulns: list = field(default_factory=list)          # [advisory dict] offline DB matches (1.0.0)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -230,6 +263,28 @@ def _init_payload():
     }
 
 
+def _discover_payload():
+    """Modern (spec 2026-07-28) stateless fingerprint. Servers MUST implement it."""
+    return {
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+        "params": {"_meta": {_DISCOVER_PROTOVER_KEY: MODERN_PROTOCOL}},
+    }
+
+
+def _modern_headers(method, name=""):
+    """Required MCP request headers on modern Streamable-HTTP POSTs (spec 2026-07-28)."""
+    h = {"Mcp-Method": method}
+    if name:
+        h["Mcp-Name"] = name
+    return h
+
+
+def _merge_headers(base, extra):
+    out = dict(base or {})
+    out.update(extra or {})
+    return out
+
+
 def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
           insecure=False, headers=None, retries=2, on_diag=None):
     """Try one host:port+path. Returns an MCPEndpoint or None.
@@ -239,16 +294,8 @@ def probe(host, port, path, scheme="http", proxy=None, timeout=8.0,
     ``status`` is None for connection-level failures.
     """
     url = f"{scheme}://{host}:{port}{path}"
-    try:
-        r = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
-    except Exception as ex:
-        if on_diag:
-            on_diag(url, None, f"connection error: {type(ex).__name__}")
-        return None
-    ep = _endpoint_from_resp(url, host, port, path, scheme, r, bool(headers))
-    if ep is None and on_diag:
-        on_diag(url, r.status, _why_not_mcp(r))
-    return ep
+    return _fingerprint(url, host, port, path, scheme, proxy, timeout,
+                        insecure, headers, retries, on_diag)
 
 
 def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None,
@@ -259,23 +306,64 @@ def probe_url(full_url, proxy=None, timeout=8.0, insecure=False, headers=None,
     host = u.hostname or ""
     port = u.port or (443 if scheme == "https" else 80)
     path = u.path or "/"
+    return _fingerprint(full_url, host, port, path, scheme, proxy, timeout,
+                        insecure, headers, retries, on_diag)
+
+
+def _fingerprint(url, host, port, path, scheme, proxy, timeout, insecure,
+                 headers, retries, on_diag):
+    """Fingerprint an endpoint: try the legacy ``initialize`` handshake, then
+    fall back to the modern stateless ``server/discover`` (spec 2026-07-28).
+
+    Modern-only servers reject ``initialize``, so without the fallback they are
+    invisible to the scanner. Dual-era servers answer both; we note the era.
+    """
+    # 1) legacy / dual-era handshake
     try:
-        r = _rpc_retry(full_url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
+        r_init = _rpc_retry(url, _init_payload(), proxy, timeout, None, insecure, headers, retries)
     except Exception as ex:
         if on_diag:
-            on_diag(full_url, None, f"connection error: {type(ex).__name__}")
+            on_diag(url, None, f"connection error: {type(ex).__name__}")
         return None
-    ep = _endpoint_from_resp(full_url, host, port, path, scheme, r, bool(headers))
+    ep = _endpoint_from_init(url, host, port, path, scheme, r_init, bool(headers))
+    if ep is not None:
+        # confirm whether a legacy/dual server ALSO speaks modern discovery
+        if not ep.auth_required:
+            _tag_dual_era(ep, url, proxy, timeout, insecure, headers, retries)
+        return ep
+
+    # 2) modern stateless discovery fallback
+    try:
+        dh = _merge_headers(headers, _modern_headers("server/discover"))
+        r_disc = _rpc_retry(url, _discover_payload(), proxy, timeout, None, insecure, dh, retries)
+    except Exception as ex:
+        if on_diag:
+            on_diag(url, None, f"connection error: {type(ex).__name__}")
+        return None
+    ep = _endpoint_from_discover(url, host, port, path, scheme, r_disc, bool(headers))
     if ep is None and on_diag:
-        on_diag(full_url, r.status, _why_not_mcp(r))
+        # report whichever response was more informative
+        on_diag(url, r_init.status, _why_not_mcp(r_init))
     return ep
 
 
-def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
-    body = r.body
-    if body is None:
-        return None
+def _tag_dual_era(ep, url, proxy, timeout, insecure, headers, retries):
+    """A legacy server that ALSO answers server/discover is dual-era."""
+    try:
+        dh = _merge_headers(headers, _modern_headers("server/discover"))
+        r = _rpc_retry(url, _discover_payload(), proxy, timeout, None, insecure, dh, retries)
+    except Exception:
+        return
+    result = r.body.get("result") if isinstance(r.body, dict) else None
+    if isinstance(result, dict) and ("supportedVersions" in result or "resultType" in result):
+        ep.protocol_era = "dual"
+        ep.supported_versions = result.get("supportedVersions") or ep.supported_versions
+        ep.findings.append("dual-era server: answers both legacy initialize and modern server/discover")
 
+
+def _auth_gate_endpoint(url, host, port, path, scheme, r):
+    """Return an (auth-required) MCPEndpoint if the response is an MCP auth gate."""
+    body = r.body
     if isinstance(body, dict) and body.get("__httperror__") in (401, 403):
         inner = body.get("body")
         looks_mcp = bool(body.get("__www__")) or (
@@ -288,8 +376,16 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
             ep.auth = {"status": "auth-required", "www_authenticate": body.get("__www__", "")}
             ep.findings.append("endpoint requires authentication")
             return ep
-        return None
+    return None
 
+
+def _endpoint_from_init(url, host, port, path, scheme, r, sent_auth):
+    body = r.body
+    if body is None:
+        return None
+    gate = _auth_gate_endpoint(url, host, port, path, scheme, r)
+    if gate is not None:
+        return gate
     if not isinstance(body, dict):
         return None
     result = body.get("result")
@@ -303,7 +399,8 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
         url=url, host=host, port=port, path=path, scheme=scheme,
         transport="sse" if "sse" in path else "streamable-http",
         server_name=si.get("name", "?"), server_version=si.get("version", "?"),
-        protocol=result.get("protocolVersion", "?"), capabilities=caps,
+        protocol=result.get("protocolVersion", "?"), protocol_era="legacy",
+        capabilities=caps,
         instructions=instr, instructions_poisoned=bool(POISON_RE.search(instr)),
         server_header=r.headers.get("server", ""), powered_by=r.headers.get("x-powered-by", ""),
         session_id=r.session, authenticated=sent_auth,
@@ -312,6 +409,45 @@ def _endpoint_from_resp(url, host, port, path, scheme, r, sent_auth):
         ep.findings.append("initialize succeeded with the supplied credentials")
     else:
         ep.findings.append("initialize succeeded without credentials (no authentication)")
+    return ep
+
+
+def _endpoint_from_discover(url, host, port, path, scheme, r, sent_auth):
+    body = r.body
+    if body is None:
+        return None
+    gate = _auth_gate_endpoint(url, host, port, path, scheme, r)
+    if gate is not None:
+        return gate
+    if not isinstance(body, dict):
+        return None
+    result = body.get("result")
+    # a modern server/discover result advertises versions/capabilities statelessly
+    if not isinstance(result, dict) or not (
+            "supportedVersions" in result or "resultType" in result or "capabilities" in result):
+        return None
+
+    meta = result.get("_meta") or {}
+    si = meta.get(_DISCOVER_SERVERINFO_KEY) or result.get("serverInfo") or {}
+    versions = result.get("supportedVersions") or []
+    caps = list((result.get("capabilities") or {}).keys())
+    instr = (result.get("instructions") or "").replace("\n", " ").strip()
+    ep = MCPEndpoint(
+        url=url, host=host, port=port, path=path, scheme=scheme,
+        transport="sse" if "sse" in path else "streamable-http",
+        server_name=si.get("name", "?"), server_version=si.get("version", "?"),
+        protocol=(versions[0] if versions else MODERN_PROTOCOL),
+        protocol_era="modern", supported_versions=versions, discover_used=True,
+        cache_ttl_ms=result.get("ttlMs"), cache_scope=result.get("cacheScope", ""),
+        capabilities=caps,
+        instructions=instr, instructions_poisoned=bool(POISON_RE.search(instr)),
+        server_header=r.headers.get("server", ""), powered_by=r.headers.get("x-powered-by", ""),
+        session_id=None, authenticated=sent_auth,
+    )
+    if sent_auth:
+        ep.findings.append("server/discover succeeded with the supplied credentials")
+    else:
+        ep.findings.append("server/discover succeeded without credentials (no authentication)")
     return ep
 
 
@@ -337,15 +473,43 @@ def _notify_initialized(url, sid, proxy, timeout, insecure, headers):
         pass
 
 
-def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2):
+def _list(url, method, key, sid, proxy, timeout, insecure, headers, retries=2, modern=False):
+    h = _merge_headers(headers, _modern_headers(method)) if modern else headers
     try:
         r = _rpc_retry(url, {"jsonrpc": "2.0", "id": 2, "method": method, "params": {}},
-                       proxy, timeout, sid, insecure, headers, retries)
+                       proxy, timeout, None if modern else sid, insecure, h, retries)
     except Exception:
         return []
     if isinstance(r.body, dict):
         return (r.body.get("result") or {}).get(key, []) or []
     return []
+
+
+def _tool_signature(t):
+    """Stable hash of a tool's security-relevant surface (name + description +
+    input schema). Used to detect rug-pulls (silent post-approval mutation)."""
+    import hashlib
+    blob = json.dumps({"name": t.get("name", ""),
+                       "description": t.get("description", ""),
+                       "inputSchema": t.get("inputSchema", {}),
+                       "annotations": t.get("annotations", {})},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _all_strings(obj):
+    """Yield every string value (and dict key) anywhere inside a JSON-like object,
+    so detectors see param names, descriptions, enums, annotations and nested
+    schemas - not only the top-level description."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k
+            yield from _all_strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _all_strings(v)
 
 
 def _analyze_tool(t):
@@ -358,14 +522,26 @@ def _analyze_tool(t):
                       if isinstance(spec, dict) and spec.get("type") == "string"
                       and not spec.get("enum"))
     injection = bool(freeform) and bool(set(tags) & INJECTABLE_TAGS)
+    # full-schema poisoning: scan the WHOLE tool's raw string values (param names,
+    # descriptions, enums, annotations, nested schema) - NOT a json.dumps(), which
+    # would escape control chars and hide ANSI payloads.
+    full_text = "\n".join(_all_strings(t))
+    poisoned = bool(POISON_RE.search(full_text))
+    hidden = hidden_char_kinds(full_text)
     return ToolInfo(name=name, description=desc, tags=tags,
-                    poisoned=bool(POISON_RE.search(desc)),
-                    freeform_params=freeform, injection_surface=injection)
+                    poisoned=poisoned,
+                    freeform_params=freeform, injection_surface=injection,
+                    hidden_chars=hidden, signature=_tool_signature(t))
 
 
 def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
                        headers=None, auth_probe=False, deep=False, read_resources=False,
-                       deep_max_bytes=65536, deep_max_resources=50):
+                       deep_max_bytes=65536, deep_max_resources=50, transport_probe=True):
+    if transport_probe and ep.transport != "stdio":
+        from .transport import probe_transport
+        probe_transport(ep, proxy, timeout, insecure, headers)
+    from . import vulndb as _vulndb
+    _vulndb.annotate(ep)
     if ep.auth_required:
         if auth_probe:
             from .authmeta import probe_auth
@@ -373,20 +549,25 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
                                  proxy, timeout, insecure)
         _score(ep)
         return ep
-    _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
+    modern = ep.protocol_era == "modern"
+    if not modern:
+        _notify_initialized(ep.url, ep.session_id, proxy, timeout, insecure, headers)
 
-    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout, insecure, headers)
+    raw_tools = _list(ep.url, "tools/list", "tools", ep.session_id, proxy, timeout,
+                      insecure, headers, modern=modern)
     for raw in raw_tools:
         ep.tools.append(_analyze_tool(raw))
 
     res = pr = templates = []
     if full or deep:
-        res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout, insecure, headers)
+        res = _list(ep.url, "resources/list", "resources", ep.session_id, proxy, timeout,
+                    insecure, headers, modern=modern)
         ep.resources = [r.get("uri", r.get("name", "?")) for r in res]
         for r in res:
             if POISON_RE.search(json.dumps(r)):
                 ep.findings.append(f"resource looks POISONED: {r.get('uri', r.get('name','?'))}")
-        pr = _list(ep.url, "prompts/list", "prompts", ep.session_id, proxy, timeout, insecure, headers)
+        pr = _list(ep.url, "prompts/list", "prompts", ep.session_id, proxy, timeout,
+                   insecure, headers, modern=modern)
         ep.prompts = [p.get("name", "?") for p in pr]
         for p in pr:
             if POISON_RE.search(json.dumps(p)):
@@ -394,7 +575,7 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
 
     if deep:
         templates = _list(ep.url, "resources/templates/list", "resourceTemplates",
-                          ep.session_id, proxy, timeout, insecure, headers)
+                          ep.session_id, proxy, timeout, insecure, headers, modern=modern)
         from . import deep as _deep
         _deep.run(ep, raw_tools, res, templates, pr, read_resources,
                   proxy, timeout, insecure, headers, deep_max_bytes, deep_max_resources)
@@ -405,9 +586,16 @@ def enumerate_endpoint(ep, proxy=None, timeout=8.0, insecure=False, full=False,
 
 def _score(ep):
     score = 0
+    if ep.protocol_era in ("modern", "dual"):
+        ep.findings.append(
+            f"protocol era: {ep.protocol_era} (server/discover, spec 2026-07-28)"
+            + (f"; supports {', '.join(ep.supported_versions)}" if ep.supported_versions else ""))
     if not ep.auth_required and not ep.authenticated and ep.transport != "stdio":
         score += 20
     st = (ep.auth or {}).get("status")
+    for hy in (ep.auth or {}).get("hygiene", []):
+        score += 10
+        ep.findings.append("oauth-hygiene: " + hy)
     if st == "oauth2.1":
         ep.findings.append("properly OAuth 2.1 protected (MCP auth spec)")
     elif st == "misconfig":
@@ -420,6 +608,16 @@ def _score(ep):
     if ep.instructions_poisoned:
         score += 20
         ep.findings.append("server instructions contain injected content")
+    ih = hidden_char_kinds(ep.instructions)
+    if ih:
+        score += 12
+        ep.findings.append("hidden-characters: server instructions contain "
+                           + ", ".join(ih) + " (concealed content)")
+    for t in ep.tools:
+        if t.hidden_chars:
+            score += 12
+            ep.findings.append(f"hidden-characters: tool '{t.name}' metadata contains "
+                               + ", ".join(t.hidden_chars) + " (concealed instructions)")
     poisoned = [t for t in ep.tools if t.poisoned]
     injectable = [t for t in ep.tools if t.injection_surface]
     for t in ep.tools:
@@ -440,9 +638,42 @@ def _score(ep):
     dangerous = [t for t in ep.tools if set(t.tags) & {"rce", "sql", "money", "destructive"}]
     if dangerous:
         ep.findings.append("high-impact tools exposed: " + ", ".join(t.name for t in dangerous))
+    # toxic flow: sensitive-data access + outbound network on the same server
+    # (private data + egress => exfiltration path). Heuristic, no LLM (Invariant).
+    sources = [t for t in ep.tools if set(t.tags) & {"secret", "pii", "db", "sql", "filesystem"}]
+    egress = [t for t in ep.tools if "network" in t.tags]
+    if sources and egress:
+        score += 10
+        ep.findings.append(
+            "toxic-flow: server exposes both sensitive-data access ("
+            + ", ".join(t.name for t in sources[:3]) + ") and outbound network ("
+            + ", ".join(t.name for t in egress[:3]) + ") - data-exfiltration path")
     hint = next((h for h in RISKY_NAME_HINTS if h in ep.server_name.lower()), None)
     if hint:
         ep.findings.append(f"server name suggests elevated/untrusted purpose ('{hint}')")
+    # weak / predictable session id (legacy transport)
+    sid = ep.session_id or ""
+    if sid and _weak_session(sid):
+        score += 8
+        ep.findings.append(f"weak-session: session id '{sid}' is short or predictable "
+                           f"(guessable; not cryptographically random)")
+    # credentials accepted over cleartext http on a routable host
+    from .transport import _is_loopback
+    if ep.scheme == "http" and not _is_loopback(ep.host) and (ep.auth_required or ep.authenticated):
+        score += 10
+        ep.findings.append("plaintext-http-auth: authentication used over cleartext http:// on a "
+                           "non-loopback host (credentials exposed in transit)")
+    # transport-probe (1.0.0) contributions
+    _tf_weight = {"dns-rebinding": 18, "cors-reflect-credentials": 18, "lan-exposure": 20,
+                  "cors-wildcard": 10, "cors-reflect": 8, "unauthenticated-tasks": 20}
+    for tf in ep.transport_findings:
+        score += _tf_weight.get(tf.get("class"), 5)
+    # known-vulnerable version matches (1.0.0, offline DB)
+    for adv in ep.known_vulns:
+        score += 20
+        ep.findings.append(
+            f"known-vulnerable: {ep.server_name} {ep.server_version} matches "
+            f"{adv['id']} ({adv.get('class', '?')}, CVSS {adv.get('cvss', '?')}) - {adv.get('detail', '')}")
     # deep-analysis (0.6.0) contributions
     score += 8 * sum(len(t.param_vulns) for t in ep.tools)
     score += 8 * len(ep.resource_findings)
@@ -513,7 +744,7 @@ def dedupe(found):
             passthru.append(ep)
             continue
         sig = (ep.scheme, ep.host, ep.port, ep.server_name, ep.server_version,
-               tuple(sorted(t.name for t in ep.tools)))
+               ep.protocol_era, tuple(sorted(t.name for t in ep.tools)))
         by_sig.setdefault(sig, []).append(ep)
     return passthru + [merge(g) for g in by_sig.values()]
 
@@ -532,10 +763,67 @@ def parse_ports(spec):
     return sorted(p for p in ports if 0 < p < 65536)
 
 
+def _weak_session(sid):
+    """Heuristic: a session id that is short, sequential, or low-entropy."""
+    import re as _re
+    if len(sid) < 16:
+        return True
+    if _re.fullmatch(r"(sess[-_]?)?\d+", sid, _re.I):   # sess-1, 42, ...
+        return True
+    if len(set(sid)) <= 4:                               # very low character diversity
+        return True
+    return False
+
+
+def _flag_tool_shadowing(found):
+    """A tool name offered by more than one distinct server can be used by a
+    malicious server to shadow/override a trusted one (Invariant; OWASP MCP03)."""
+    from collections import defaultdict
+    owners = defaultdict(set)
+    for ep in found:
+        for t in ep.tools:
+            owners[t.name].add(ep.url)
+    for ep in found:
+        for t in ep.tools:
+            others = owners[t.name] - {ep.url}
+            if others:
+                detail = (f"tool '{t.name}' is also offered by {len(others)} other server(s) "
+                          f"({', '.join(sorted(others))}) - shadowing/override risk")
+                ep.findings.append("tool-shadowing: " + detail)
+                ep.transport_findings.append({"class": "tool-shadowing", "detail": detail})
+                ep.risk_score += 6
+                ep.risk_level = ("critical" if ep.risk_score >= 60 else "high" if ep.risk_score >= 35
+                                 else "medium" if ep.risk_score >= 15 else "low")
+
+
+def _flag_sibling_auth_gaps(found):
+    """Flag endpoints on a host:port where a sibling path enforces auth but this one
+    does not - the CVE-2026-33032 pattern (/mcp protected, /mcp_message open)."""
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for ep in found:
+        groups[(ep.scheme, ep.host, ep.port)].append(ep)
+    for eps in groups.values():
+        authed = [e for e in eps if e.auth_required]
+        openish = [e for e in eps if not e.auth_required and not e.authenticated
+                   and e.server_name not in ("(auth required)",)]
+        if authed and openish:
+            authed_paths = ", ".join(sorted(e.path for e in authed))
+            for e in openish:
+                detail = (f"sibling endpoint(s) require auth ({authed_paths}) but {e.path} "
+                          f"does not - inconsistent authentication (CVE-2026-33032 class)")
+                e.findings.append("sibling-endpoint-auth-gap: " + detail)
+                e.transport_findings.append({"class": "sibling-endpoint-auth-gap", "detail": detail})
+                e.risk_score += 15
+                e.risk_level = ("critical" if e.risk_score >= 60 else "high" if e.risk_score >= 35
+                                else "medium" if e.risk_score >= 15 else "low")
+
+
 def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
          concurrency=16, insecure=False, full=False, headers=None, exclude=None,
          retries=2, on_found=None, on_diag=None, auth_probe=False,
-         deep=False, read_resources=False, deep_max_bytes=65536, deep_max_resources=50):
+         deep=False, read_resources=False, deep_max_bytes=65536, deep_max_resources=50,
+         transport_probe=True):
     """Sweep targets. A target may be a bare host, a CIDR block, or a full URL.
 
     Full-URL targets are probed exactly (ports/paths/schemes ignored for them).
@@ -571,10 +859,13 @@ def scan(targets, ports, paths=None, schemes=("http",), proxy=None, timeout=8.0,
             if ep is None:
                 continue
             enumerate_endpoint(ep, proxy, timeout, insecure, full, headers, auth_probe,
-                               deep, read_resources, deep_max_bytes, deep_max_resources)
+                               deep, read_resources, deep_max_bytes, deep_max_resources,
+                               transport_probe)
             found.append(ep)
             if on_found:
                 on_found(ep)
     found = dedupe(found)
+    _flag_sibling_auth_gaps(found)
+    _flag_tool_shadowing(found)
     found.sort(key=lambda e: (-e.risk_score, e.host, e.port, e.path))
     return found

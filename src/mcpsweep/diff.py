@@ -27,16 +27,30 @@ def diff_reports(old_path, new_path):
         oe, ne = old[url], new[url]
         ot = {t["name"]: t for t in oe.get("tools", [])}
         nt = {t["name"]: t for t in ne.get("tools", [])}
+        common = set(ot) & set(nt)
+        # rug-pull: a tool that stayed but whose signature (name+description+schema)
+        # changed - the MCPoison pattern (CVE-2025-54136). Fall back to description
+        # comparison when an older report has no signature field.
+        rug = []
+        for n in common:
+            osig, nsig = ot[n].get("signature"), nt[n].get("signature")
+            if osig and nsig:
+                if osig != nsig:
+                    rug.append(n)
+            elif ot[n].get("description") != nt[n].get("description"):
+                rug.append(n)
         c = {
             "url": url,
             "tools_added": sorted(set(nt) - set(ot)),
             "tools_removed": sorted(set(ot) - set(nt)),
-            "newly_poisoned": sorted(n for n in (set(ot) & set(nt))
+            "newly_poisoned": sorted(n for n in common
                                      if nt[n].get("poisoned") and not ot[n].get("poisoned")),
+            "rug_pulled": sorted(rug),
             "risk_from": oe.get("risk_level"), "risk_to": ne.get("risk_level"),
             "risk_changed": oe.get("risk_level") != ne.get("risk_level"),
         }
-        if (c["tools_added"] or c["tools_removed"] or c["newly_poisoned"] or c["risk_changed"]):
+        if (c["tools_added"] or c["tools_removed"] or c["newly_poisoned"]
+                or c["rug_pulled"] or c["risk_changed"]):
             changes.append(c)
     return {"added": added, "removed": removed, "changed": changes,
             "old": old_path, "new": new_path}
@@ -61,6 +75,8 @@ def render_diff_text(d, color=True):
             out.append(f"      {R}- tool{Z} {t}")
         for t in c["newly_poisoned"]:
             out.append(f"      {R}! now POISONED{Z} {t}")
+        for t in c.get("rug_pulled", []):
+            out.append(f"      {R}! RUG-PULL (definition changed){Z} {t}")
         if c["risk_changed"]:
             out.append(f"      {Y}~ risk {c['risk_from']} -> {c['risk_to']}{Z}")
     if not (d["added"] or d["removed"] or d["changed"]):
