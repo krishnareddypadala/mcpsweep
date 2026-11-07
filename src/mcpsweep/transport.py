@@ -12,7 +12,8 @@ Models:
 - **CORS** - ``Access-Control-Allow-Origin: *`` or a reflected origin, combined
   with ``Access-Control-Allow-Credentials: true``, lets any site read responses.
 - **LAN exposure (NeighborJack)** - an unauthenticated MCP server answering on a
-  non-loopback address is reachable across the LAN (CVE-2026-49257, 10.0).
+  private/LAN-scoped address is reachable across the LAN (CVE-2026-49257, 10.0).
+  Public FQDNs/IPs are exposed by design and do not trip this (see ``_lan_scope``).
 """
 from __future__ import annotations
 
@@ -56,6 +57,43 @@ def _is_loopback(host):
         return ipaddress.ip_address(h).is_loopback
     except ValueError:
         return False
+
+
+# Carrier-grade NAT shared address space (RFC 6598). ipaddress.is_private only
+# learned about it in Python 3.12.4, so classify it explicitly for 3.8+.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+# Hostname suffixes that name a private/LAN-scoped host (mDNS and common
+# intranet conventions), not a public internet service.
+_LAN_SUFFIXES = (".local", ".lan", ".internal", ".intranet",
+                 ".home", ".corp", ".localdomain")
+
+
+def _lan_scope(host):
+    """True only if *host* is a private / LAN-scoped address or name.
+
+    This is the NeighborJack ("reachable across the LAN") predicate, so it must
+    be False for both loopback and for *public* internet hosts: an unauthenticated
+    server on a public FQDN or public IP (e.g. a hosted SaaS MCP endpoint) is
+    public by design, not a LAN-exposure misconfiguration.
+    """
+    h = (host or "").strip("[]").lower()
+    if not h or h in ("localhost", "ip6-localhost"):
+        return False
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        # Hostname, not an IP literal. LAN only if it names an intranet host:
+        # an mDNS/intranet suffix, or a single-label (dotless) name like "nas".
+        if h.endswith(_LAN_SUFFIXES):
+            return True
+        return "." not in h
+    if ip.is_loopback:
+        return False
+    # RFC1918 private, link-local (169.254/fe80::), unique-local (fc00::/7),
+    # and CGNAT shared space are all LAN/neighbour-reachable scope.
+    return (ip.is_private or ip.is_link_local
+            or (ip.version == 4 and ip in _CGNAT))
 
 
 def probe_transport(ep, proxy=None, timeout=8.0, insecure=False, headers=None):
@@ -109,9 +147,11 @@ def probe_transport(ep, proxy=None, timeout=8.0, insecure=False, headers=None):
             add("cors-reflect", "reflects an arbitrary Origin in Access-Control-Allow-Origin")
 
     # 3) LAN exposure (NeighborJack) ------------------------------------------
-    if not ep.auth_required and not ep.authenticated and not _is_loopback(ep.host):
+    #    Only for private/LAN-scoped hosts - a public FQDN/IP is exposed by
+    #    design, not a NeighborJack misconfiguration (see _lan_scope).
+    if not ep.auth_required and not ep.authenticated and _lan_scope(ep.host):
         add("lan-exposure",
-            f"unauthenticated MCP server answering on a non-loopback address ({ep.host}) "
+            f"unauthenticated MCP server answering on a private/LAN address ({ep.host}) "
             f"- reachable across the LAN (NeighborJack)")
 
     # 4) unauthenticated tasks/* on an otherwise-authenticated server ---------
