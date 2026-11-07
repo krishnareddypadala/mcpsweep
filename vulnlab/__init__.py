@@ -1,4 +1,4 @@
-"""mcpsweep vulnlab — a deliberately-vulnerable MCP server for testing mcpsweep.
+"""mcpsweep vulnlab - a deliberately-vulnerable MCP server for testing mcpsweep.
 
 INTENTIONALLY INSECURE. Isolated lab use only.
 """

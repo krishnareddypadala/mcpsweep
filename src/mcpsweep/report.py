@@ -108,7 +108,7 @@ def render_sarif(endpoints, scope="", violations=None):
             results.append({
                 "ruleId": rid,
                 "level": _RULES[rid][1],
-                "message": {"text": f"{f} — {ep.server_name} ({ep.risk_level}, score {ep.risk_score})"},
+                "message": {"text": f"{f} - {ep.server_name} ({ep.risk_level}, score {ep.risk_score})"},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": ep.url}}}],
                 "properties": {"riskLevel": ep.risk_level, "riskScore": ep.risk_score},
@@ -156,9 +156,9 @@ def render_html(endpoints, scope="", elapsed=0.0):
         col = _LEVEL_HEX.get(ep.risk_level, "#6f7788")
         tools_rows = "".join(
             f"<tr><td><code>{esc(t.name)}</code></td>"
-            f"<td>{esc(', '.join(t.tags) or '—')}</td>"
+            f"<td>{esc(', '.join(t.tags) or '-')}</td>"
             f"<td>{'⚠️ yes' if t.poisoned else 'no'}</td>"
-            f"<td>{esc(', '.join(t.freeform_params) or '—')}</td></tr>"
+            f"<td>{esc(', '.join(t.freeform_params) or '-')}</td></tr>"
             for t in ep.tools)
         findings = "".join(f"<li>{esc(f)}</li>" for f in ep.findings)
         meta = (f"{esc(ep.server_name)} v{esc(ep.server_version)} · proto {esc(ep.protocol)} · "

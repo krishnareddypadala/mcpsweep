@@ -3,7 +3,7 @@
 Declare a sanctioned inventory once (JSON); every scan then flags anything that
 deviates: servers not in the baseline (shadow), tools outside a server's
 allowlist, and rule breaches (require_auth, deny_tags, deny_poisoned, max_risk).
-Stateless — unlike ``diff``, which needs two scans to compare.
+Stateless - unlike ``diff``, which needs two scans to compare.
 """
 from __future__ import annotations
 

@@ -7,13 +7,13 @@
 🌐 **Website:** [mcpsweep.com](https://mcpsweep.com) · source in the [mcpsweep-site](https://github.com/krishnareddypadala/mcpsweep-site) repo
 
 A small, dependency-free **discovery and fingerprinting scanner for MCP-over-HTTP
-servers** — think *nmap for MCP*. It finds Model Context Protocol endpoints on a
+servers** - think *nmap for MCP*. It finds Model Context Protocol endpoints on a
 host or network, fingerprints each one (both the legacy `initialize` handshake
 **and** the modern stateless `server/discover` of spec **2026-07-28**), enumerates
 its **tools / resources / prompts**, and flags risky/**poisoned** tools, transport
 weaknesses, and known-vulnerable versions.
 
-It is strictly **read-only** by default — handshake and `*/list` calls only, never
+It is strictly **read-only** by default - handshake and `*/list` calls only, never
 `tools/call` (unless you opt into `--active`). And it is **local-only**: mcpsweep
 has **zero runtime dependencies**, uses **no LLM and no cloud service**, and never
 sends your tool names, descriptions, or configs anywhere. The only host it talks
@@ -29,7 +29,7 @@ to is the one you point it at.
 MCP servers are easy to spin up and often ship with no authentication, over-broad
 tools (arbitrary SQL, shell, money movement), or instructions hidden inside a
 tool's *description* (tool poisoning). `mcpsweep` helps you inventory that surface
-— including **shadow** servers nobody registered — and see the risk at a glance.
+- including **shadow** servers nobody registered - and see the risk at a glance.
 
 ## Install
 
@@ -61,9 +61,9 @@ mcpsweep http://10.10.0.31:8090/mcp/api
 mcpsweep -iL targets.txt --exclude 10.10.0.5
 mcpsweep -iL targets.json           # ["10.0.0.1", "http://h:8090/mcp"] or {"targets":[...]}
 mcpsweep -iL previous-report.json   # re-scan the endpoints from an earlier JSON report
-mcpsweep -iL claude_desktop_config.json   # your MCP client config (mcpServers/servers) — scans the http/sse servers
+mcpsweep -iL claude_desktop_config.json   # your MCP client config (mcpServers/servers) - scans the http/sse servers
 
-# stdio servers — spawns them, so it runs third-party code (opt-in ack required)
+# stdio servers - spawns them, so it runs third-party code (opt-in ack required)
 mcpsweep --stdio "npx -y @scope/mcp" --yes-run-untrusted
 mcpsweep -iL claude_desktop_config.json --include-stdio --yes-run-untrusted   # also spawn the stdio entries
 
@@ -88,7 +88,7 @@ mcpsweep 10.10.0.31 --ports 8090 --baseline baseline.json --fail-on-policy
 # CI gates: only show high+, fail the build on any critical
 mcpsweep 10.10.0.31 --ports 8090 --severity high --fail-on critical
 
-# active verification — CALLS tools; authorized labs only
+# active verification - CALLS tools; authorized labs only
 mcpsweep 10.10.0.31 --ports 8090 --active --active-dry-run          # preview, calls nothing
 mcpsweep 10.10.0.31 --ports 8090 --active --i-have-authorization    # verify BOLA / secret exposure
 
@@ -130,7 +130,7 @@ mcpsweep lint-config ~/.cursor/mcp.json ~/Library/Application\ Support/Claude/cl
 | `--fail-on-policy` | exit `4` if any baseline/policy violation |
 | `--active` | **calls** safe-read tools to verify BOLA/secret exposure (needs `--i-have-authorization`) |
 | `--active-all` | active-probe **all** tools, not just safe-read (dangerous; labs only) |
-| `--active-dry-run` | preview what active mode would call — calls nothing |
+| `--active-dry-run` | preview what active mode would call - calls nothing |
 | `--active-log FILE` | audit log of every active tool call |
 | `--format`/`-f` | `text` (default), `json`, `md`, `sarif`, `html` |
 | `--verbose`/`-v` | explain probe misses: `-v` shows HTTP responses that weren't MCP (401, 404, redirect…), `-vv` also shows connection errors |
@@ -148,7 +148,7 @@ mcpsweep diff baseline.json current.json
 ```
 
 Reports **new / removed servers and tools**, **newly-poisoned** descriptions, and
-**risk-level changes** — turning point-in-time scans into continuous monitoring.
+**risk-level changes** - turning point-in-time scans into continuous monitoring.
 
 > **Windows / Git Bash note:** Git Bash (MSYS) rewrites arguments that look like
 > Unix paths, so `--paths /mcp/api` becomes a Windows path before the tool sees
@@ -159,22 +159,22 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
 
 - **Live MCP endpoints** across many candidate paths/ports, via the legacy
   `initialize` handshake **and** the modern stateless `server/discover`
-  (spec 2026-07-28) — so modern-only servers aren't missed (Streamable-HTTP and
+  (spec 2026-07-28) - so modern-only servers aren't missed (Streamable-HTTP and
   SSE-framed responses). Dual-era servers are tagged.
 - **Transport weaknesses** (read-only live probes): **DNS-rebinding** (foreign
   `Host`/`Origin` accepted), **CORS** wildcard/reflected-with-credentials,
-  **LAN exposure** (unauthenticated on a non-loopback address — NeighborJack),
+  **LAN exposure** (unauthenticated on a non-loopback address - NeighborJack),
   and **sibling-endpoint auth gaps** (one path protected, a sibling open).
 - **Known-vulnerable versions**: matches `serverInfo` against a **bundled,
   offline** advisory DB (no OSV/NVD calls).
 - **Hidden/deceptive metadata**: ANSI escapes, zero-width, bidi overrides, and
   Unicode **TAG-block** concealment in tool metadata and server instructions.
 - **Full-schema tool poisoning**: injected instructions anywhere in the tool
-  (param names, descriptions, enums, annotations) — not just the description.
+  (param names, descriptions, enums, annotations) - not just the description.
 - **Rug-pulls**: `mcpsweep diff` flags a tool whose signature changed since the
   baseline (MCPoison class), plus tool **shadowing** across servers.
 - **OAuth metadata hygiene**: SSRF targets, bad schemes, shell metacharacters,
-  missing issuer, over-broad scopes — and it refuses to fetch a link-local /
+  missing issuer, over-broad scopes - and it refuses to fetch a link-local /
   cloud-metadata / private target itself.
 - **Dangerous local configs** (`lint-config`): `sh -c`, `curl|sh`, unpinned
   `npx -y`/`uvx`, inline-eval interpreters, plaintext secrets.
@@ -197,7 +197,7 @@ Reports **new / removed servers and tools**, **newly-poisoned** descriptions, an
   annotation mismatches, and confused-deputy tool chaining; with `--read-resources`,
   scans resource contents for secrets/PII and stored injection.
 - **Verified exploitation** (`--active`, opt-in): actually calls safe-read tools to
-  confirm unauthenticated BOLA/IDOR and real secret/PII exposure — the one mode that
+  confirm unauthenticated BOLA/IDOR and real secret/PII exposure - the one mode that
   isn't read-only, gated behind `--i-have-authorization` (or `--active-dry-run`).
 
 A per-endpoint **risk score** rolls these up into `low / medium / high / critical`.
@@ -215,8 +215,8 @@ for ep in scan(["10.10.0.31"], ports=[8090], proxy="http://127.0.0.1:8080"):
 
 ## Roadmap
 
-Planned features — stdio scanning, OAuth/auth-spec detection, deep vulnerability
-discovery, policy baselines, and active authz probing — are specced in
+Planned features - stdio scanning, OAuth/auth-spec detection, deep vulnerability
+discovery, policy baselines, and active authz probing - are specced in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License

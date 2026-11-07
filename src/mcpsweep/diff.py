@@ -1,7 +1,7 @@
 """Drift detection: compare two mcpsweep JSON reports.
 
 Surfaces new / removed MCP servers and tools, newly-poisoned descriptions, and
-risk-level changes between an old and a new scan — the basis for continuous
+risk-level changes between an old and a new scan - the basis for continuous
 posture monitoring.
 """
 from __future__ import annotations

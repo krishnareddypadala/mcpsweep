@@ -1,4 +1,4 @@
-"""Active authorization probing (0.8.0) — opt-in, heavily gated.
+"""Active authorization probing (0.8.0) - opt-in, heavily gated.
 
 Unlike the rest of mcpsweep, this module CALLS tools (``tools/call``) to *verify*
 findings rather than infer them: unauthenticated BOLA/IDOR (an id-taking read

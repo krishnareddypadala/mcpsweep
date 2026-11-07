@@ -2,7 +2,7 @@
 
 A **deliberately-vulnerable** MCP-over-HTTP server used to test every mcpsweep
 detection end-to-end. One stdlib Python process serves many endpoints, each
-crafted to trip one check — plus clean "control" endpoints that must stay
+crafted to trip one check - plus clean "control" endpoints that must stay
 benign (so we catch false positives).
 
 > ⚠️ **INTENTIONALLY INSECURE.** Run only on an isolated lab network you control.
@@ -38,15 +38,15 @@ directly into the stack's compose file so it shares the lab network.
 | Path | Models / CVE class |
 |---|---|
 | `/mcp/noauth` | no-auth (MCP07), tool poisoning (MCP03), rce/sql injection surface (MCP05), poisoned instructions (MCP06), DNS-rebinding, wildcard CORS, weak session-id |
-| `/mcp` + `/mcp_message` | sibling-endpoint auth gap — `/mcp` requires auth, `/mcp_message` does not (CVE-2026-33032) |
+| `/mcp` + `/mcp_message` | sibling-endpoint auth gap - `/mcp` requires auth, `/mcp_message` does not (CVE-2026-33032) |
 | `/mcp/modern` | modern stateless `server/discover` (spec 2026-07-28); rejects `initialize` |
 | `/mcp/dual` | dual-era: answers both `initialize` and `server/discover` |
 | `/mcp/poison` | full-schema poisoning (enum/param), ANSI-escape deception, Unicode TAG-block / zero-width concealment |
 | `/mcp/readonly-lie` | `readOnlyHint: true` on a destructive tool (CVE-2026-46519 class); argument-injection schema (CVE-2026-61459) |
-| `/mcp/oauth-ssrf` | OAuth metadata hygiene — `resource_metadata`/AS at link-local `169.254.169.254` (CVE-2026-51994 class). Always on for this path |
-| `/mcp/rugpull` | rug-pull — tool definition changes when `MCPSWEEP_RUGPULL=1` (CVE-2025-54136 MCPoison). Scan before/after and `diff` |
+| `/mcp/oauth-ssrf` | OAuth metadata hygiene - `resource_metadata`/AS at link-local `169.254.169.254` (CVE-2026-51994 class). Always on for this path |
+| `/mcp/rugpull` | rug-pull - tool definition changes when `MCPSWEEP_RUGPULL=1` (CVE-2025-54136 MCPoison). Scan before/after and `diff` |
 | `/mcp/tasks` | unauthenticated `tasks/*` on an otherwise-authenticated server (CVE-2026-52870 / 111767) |
-| `/mcp/secure-oauth`, `/mcp/safe`, `/mcp` | **clean controls** — mcpsweep should rank these low/benign |
+| `/mcp/secure-oauth`, `/mcp/safe`, `/mcp` | **clean controls** - mcpsweep should rank these low/benign |
 
 ## Demonstrate against mcpsweep
 
