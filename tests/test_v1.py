@@ -125,6 +125,19 @@ def test_is_loopback_helper():
     assert not _is_loopback("10.10.0.31") and not _is_loopback("0.0.0.0")
 
 
+def test_lan_scope_helper():
+    from mcpsweep.transport import _lan_scope
+    # private / LAN-scoped -> NeighborJack applies
+    for h in ("10.10.0.31", "192.168.1.5", "172.16.0.1", "169.254.1.1",
+              "100.64.0.1", "fc00::1", "fe80::1", "nas", "server.local",
+              "box.internal", "printer.lan"):
+        assert _lan_scope(h), h
+    # loopback and PUBLIC hosts -> not LAN exposure (public is exposed by design)
+    for h in ("127.0.0.1", "::1", "localhost", "8.8.8.8", "140.82.112.3",
+              "huggingface.co", "api.example.com"):
+        assert not _lan_scope(h), h
+
+
 # --- Tier 1: passive OAuth hygiene -----------------------------------------
 
 def test_unsafe_target_helper():
