@@ -4,6 +4,8 @@
 [![PyPI](https://img.shields.io/pypi/v/mcpsweep.svg)](https://pypi.org/project/mcpsweep/)
 [![Python](https://img.shields.io/pypi/pyversions/mcpsweep.svg)](https://pypi.org/project/mcpsweep/)
 
+🌐 **Website:** [mcpsweep.com](https://mcpsweep.com) · source in the [mcpsweep-site](https://github.com/krishnareddypadala/mcpsweep-site) repo
+
 A small, dependency-free **discovery and fingerprinting scanner for MCP-over-HTTP
 servers** — think *nmap for MCP*. It finds Model Context Protocol endpoints on a
 host or network, fingerprints each one (both the legacy `initialize` handshake
