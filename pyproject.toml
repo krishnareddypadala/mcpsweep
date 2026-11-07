@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "mcpsweep contributors" }]
 keywords = ["mcp", "model-context-protocol", "security", "scanner", "discovery", "recon", "llm", "appsec"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
@@ -27,8 +27,11 @@ dependencies = []  # stdlib only
 test = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/krishnareddypadala/mcpsweep"
+Homepage = "https://mcpsweep.com"
+Documentation = "https://mcpsweep.com"
+Repository = "https://github.com/krishnareddypadala/mcpsweep"
 Issues = "https://github.com/krishnareddypadala/mcpsweep/issues"
+Changelog = "https://github.com/krishnareddypadala/mcpsweep/blob/master/CHANGELOG.md"
 
 [project.scripts]
 mcpsweep = "mcpsweep.cli:main"
