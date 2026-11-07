@@ -36,7 +36,7 @@ def render_console(endpoints, elapsed, violations=None):
         if ep.aliases:
             out.append(f"    {C.DIM}aliases :{C.Z} {', '.join(ep.aliases)}")
         if ep.auth_required:
-            out.append(f"    {C.DIM}server  :{C.Z} (authentication required — not enumerated)")
+            out.append(f"    {C.DIM}server  :{C.Z} (authentication required - not enumerated)")
             a = ep.auth or {}
             if a.get("status") and a["status"] != "auth-required":
                 line = f"    {C.DIM}auth    :{C.Z} {a['status']}"
@@ -121,7 +121,7 @@ def render_markdown(endpoints, elapsed, scope, violations=None):
         notable += sorted({tag for t in ep.tools for tag in t.tags
                            if tag in ("rce", "sql", "money", "destructive", "secret")})
         L.append(f"| `{ep.url}` | {ep.server_name} v{ep.server_version} | "
-                 f"{ep.risk_level} ({ep.risk_score}) | {len(ep.tools)} | {', '.join(notable) or '—'} |")
+                 f"{ep.risk_level} ({ep.risk_score}) | {len(ep.tools)} | {', '.join(notable) or '-'} |")
     L.append("")
     for ep in endpoints:
         if ep.auth_required:
@@ -135,8 +135,8 @@ def render_markdown(endpoints, elapsed, scope, violations=None):
         if ep.tools:
             L += ["", "| Tool | Risk tags | Poisoned | Free-form params |", "|---|---|---|---|"]
             for t in ep.tools:
-                L.append(f"| `{t.name}` | {', '.join(t.tags) or '—'} | "
-                         f"{'⚠️ yes' if t.poisoned else 'no'} | {', '.join(t.freeform_params) or '—'} |")
+                L.append(f"| `{t.name}` | {', '.join(t.tags) or '-'} | "
+                         f"{'⚠️ yes' if t.poisoned else 'no'} | {', '.join(t.freeform_params) or '-'} |")
         L.append("")
     if violations:
         L += ["## Policy violations", "", "| Rule | Detail | Endpoint |", "|---|---|---|"]
@@ -177,7 +177,7 @@ def build_parser():
     p.add_argument("--include-stdio", action="store_true",
                    help="also spawn the stdio servers found in an mcpServers/servers config (-iL)")
     p.add_argument("--yes-run-untrusted", action="store_true",
-                   help="required to spawn stdio servers — they run third-party code")
+                   help="required to spawn stdio servers - they run third-party code")
     p.add_argument("--stdio-timeout", type=float, default=20.0,
                    help="per-request timeout for stdio servers (default 20)")
     p.add_argument("--ports", default=",".join(map(str, DEFAULT_PORTS)),
@@ -236,7 +236,7 @@ def _extract_targets(obj):
       * a list of strings / objects with a "url" / "host" / "target" key
       * a {"targets": [...]} object
       * a prior mcpsweep report ({"endpoints": [{"url": ...}]}) to re-scan
-      * an MCP client config ({"mcpServers": {name: {"url": ...}}}) — the format
+      * an MCP client config ({"mcpServers": {name: {"url": ...}}}) - the format
         used by Claude Desktop / Cursor / Claude Code; stdio servers (no "url")
         are skipped since they are not HTTP-scannable.
     """
@@ -390,7 +390,7 @@ def main(argv=None):
     if stdio_specs:
         from .stdio import probe_stdio
         if not args.quiet and args.format == "text":
-            print(f"  {C.DIM}spawning {len(stdio_specs)} stdio server(s) — runs third-party code{C.Z}",
+            print(f"  {C.DIM}spawning {len(stdio_specs)} stdio server(s) - runs third-party code{C.Z}",
                   file=sys.stderr)
         for spec in stdio_specs:
             try:
@@ -418,7 +418,7 @@ def main(argv=None):
             audit = [] if args.active_log else None
             if not args.quiet and args.format == "text":
                 mode = "dry-run" if args.active_dry_run else ("tier2/all" if tier == 2 else "tier1/safe-read")
-                print(f"  {C.WARN}active probing ({mode}) — calls tools on the target{C.Z}", file=sys.stderr)
+                print(f"  {C.WARN}active probing ({mode}) - calls tools on the target{C.Z}", file=sys.stderr)
             for ep in endpoints:
                 if ep.auth_required or ep.transport == "stdio":
                     continue

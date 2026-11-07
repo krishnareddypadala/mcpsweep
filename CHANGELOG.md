@@ -56,7 +56,7 @@
 - `--severity` filter and `--fail-on` exit-code gate.
 
 **Drift detection**
-- New `mcpsweep diff old.json new.json` subcommand — new/removed servers & tools, newly-poisoned descriptions, risk-level changes; `--fail-on-drift` exits `3`.
+- New `mcpsweep diff old.json new.json` subcommand - new/removed servers & tools, newly-poisoned descriptions, risk-level changes; `--fail-on-drift` exits `3`.
 
 ## 0.1.0
 

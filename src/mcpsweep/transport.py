@@ -5,13 +5,13 @@ read-only: one OPTIONS preflight and one re-sent fingerprint request with a
 foreign Origin/Host. Nothing mutating is ever sent.
 
 Models:
-- **DNS rebinding** — a server that answers a request carrying a foreign
+- **DNS rebinding** - a server that answers a request carrying a foreign
   ``Host``/``Origin`` has no rebinding protection, so a malicious web page can
   pivot through the victim's browser to a localhost MCP server
   (CVE-2025-66414 / 66416; the SDKs shipped this OFF by default).
-- **CORS** — ``Access-Control-Allow-Origin: *`` or a reflected origin, combined
+- **CORS** - ``Access-Control-Allow-Origin: *`` or a reflected origin, combined
   with ``Access-Control-Allow-Credentials: true``, lets any site read responses.
-- **LAN exposure (NeighborJack)** — an unauthenticated MCP server answering on a
+- **LAN exposure (NeighborJack)** - an unauthenticated MCP server answering on a
   non-loopback address is reachable across the LAN (CVE-2026-49257, 10.0).
 """
 from __future__ import annotations

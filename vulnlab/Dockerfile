@@ -1,4 +1,4 @@
-# mcpsweep vulnlab — intentionally-vulnerable MCP server (lab use only)
+# mcpsweep vulnlab - intentionally-vulnerable MCP server (lab use only)
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="mcpsweep-vulnlab" \

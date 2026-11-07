@@ -7,7 +7,7 @@ name: Release
 #   2. release-please opens/updates a "release PR" that bumps the version and
 #      updates CHANGELOG.md.
 #   3. Merging that PR creates a GitHub release + tag, and this same run then
-#      builds, tests and publishes to PyPI (no token stored — OIDC).
+#      builds, tests and publishes to PyPI (no token stored - OIDC).
 #
 # One-time PyPI setup (https://pypi.org/manage/account/publishing/):
 #   project mcpsweep · owner krishnareddypadala · repo mcpsweep

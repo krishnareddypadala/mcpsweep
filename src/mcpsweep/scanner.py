@@ -717,8 +717,8 @@ def _canonical_path(path):
 def dedupe(found):
     """Collapse endpoints that are the same server reached via twin URLs.
 
-    Level 1 — trailing-slash twins: same (scheme, host, port, normalised path).
-    Level 2 — same server (name, version, tool-set) on the same host:port via
+    Level 1 - trailing-slash twins: same (scheme, host, port, normalised path).
+    Level 2 - same server (name, version, tool-set) on the same host:port via
     different paths. The canonical endpoint keeps the shortest path; the others'
     URLs are recorded in ``aliases``.
     """

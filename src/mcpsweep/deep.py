@@ -3,7 +3,7 @@ templates and derive concrete vulnerability classes.
 
 Static checks add no requests beyond enumeration (+ resources/templates/list).
 The opt-in deep read (``--read-resources``) fetches resource *contents* via
-resources/read and scans them — still never calling a tool.
+resources/read and scans them - still never calling a tool.
 """
 from __future__ import annotations
 
