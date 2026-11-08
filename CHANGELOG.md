@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/krishnareddypadala/mcpsweep/compare/v1.0.0...v1.0.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **transport:** only flag lan-exposure for private/LAN-scoped hosts ([#12](https://github.com/krishnareddypadala/mcpsweep/issues/12)) ([0d3fa5f](https://github.com/krishnareddypadala/mcpsweep/commit/0d3fa5f16d41a0bbc831b36d964b494cbe7f40c0))
+
 ## [1.0.0](https://github.com/krishnareddypadala/mcpsweep/compare/v0.2.0...v1.0.0) (2026-11-07)
 
 
